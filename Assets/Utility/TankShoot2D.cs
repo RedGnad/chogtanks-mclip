@@ -221,21 +221,23 @@ public class TankShoot2D : Photon.Pun.MonoBehaviourPunCallbacks
         var shellHandler = shell.GetComponent<ShellCollisionHandler>();
         if (shellHandler != null)
         {
-            shellHandler.photonView.RPC("SetPrecision", RpcTarget.AllBuffered, isPrecision);
-            shellHandler.photonView.RPC("SetShooter", RpcTarget.AllBuffered, PhotonNetwork.LocalPlayer.ActorNumber);
+            // We do NOT need buffering for ephemeral projectiles: buffering was polluting the room cache and replaying
+            // obsolete RPCs to late joiners, causing PhotonView not found errors after many matches.
+            shellHandler.photonView.RPC("SetPrecision", RpcTarget.All, isPrecision);
+            shellHandler.photonView.RPC("SetShooter", RpcTarget.All, PhotonNetwork.LocalPlayer.ActorNumber);
 
             if (isPrecision)
             {
                 if (hasRicochetPowerup)
                 {
-                    shellHandler.photonView.RPC("ActivateRicochetRPC", RpcTarget.AllBuffered);
+                    shellHandler.photonView.RPC("ActivateRicochetRPC", RpcTarget.All);
                     hasRicochetPowerup = false; 
                     
                     FireRicochetFanShells(shootDir, shellSpeedFinal, isPrecision);
                 }
                 else if (hasExplosivePowerup)
                 {
-                    shellHandler.photonView.RPC("ActivateExplosiveShotRPC", RpcTarget.AllBuffered);
+                    shellHandler.photonView.RPC("ActivateExplosiveShotRPC", RpcTarget.All);
                     hasExplosivePowerup = false;
                 }
             }
@@ -262,9 +264,9 @@ public class TankShoot2D : Photon.Pun.MonoBehaviourPunCallbacks
             var fanShellHandler = fanShell.GetComponent<ShellCollisionHandler>();
             if (fanShellHandler != null)
             {
-                fanShellHandler.photonView.RPC("SetPrecision", RpcTarget.AllBuffered, isPrecision);
-                fanShellHandler.photonView.RPC("SetShooter", RpcTarget.AllBuffered, PhotonNetwork.LocalPlayer.ActorNumber);
-                fanShellHandler.photonView.RPC("ActivateRicochetRPC", RpcTarget.AllBuffered);
+                fanShellHandler.photonView.RPC("SetPrecision", RpcTarget.All, isPrecision);
+                fanShellHandler.photonView.RPC("SetShooter", RpcTarget.All, PhotonNetwork.LocalPlayer.ActorNumber);
+                fanShellHandler.photonView.RPC("ActivateRicochetRPC", RpcTarget.All);
             }
         }
         

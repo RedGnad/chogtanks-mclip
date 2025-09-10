@@ -20,11 +20,10 @@ public class RicochetPowerup : MonoBehaviourPun
             // Use an RPC to grant the power-up to the specific client who owns the tank
             tank.photonView.RPC("RPC_ActivateRicochetPowerup", tank.photonView.Owner);
 
-            // Play pickup sound for everyone via an RPC on this powerup's PhotonView
+            // Play pickup sound for everyone via an RPC on this powerup's PhotonView.
+            // We delay destruction one frame to reduce race where Destroy arrives before RPC on remote clients.
             photonView.RPC("RPC_PlayPickupFX", RpcTarget.All);
-
-            // Master client destroys the power-up object
-            PhotonNetwork.Destroy(gameObject);
+            StartCoroutine(DestroyNextFrame());
         }
     }
 
@@ -34,6 +33,15 @@ public class RicochetPowerup : MonoBehaviourPun
         if (pickupSFX != null && SFXManager.Instance != null)
         {
             SFXManager.Instance.audioSource.PlayOneShot(pickupSFX, pickupVolume);
+        }
+    }
+    private System.Collections.IEnumerator DestroyNextFrame()
+    {
+        // Wait one frame so pickup RPC reaches everyone before destroy
+        yield return null; // wait a frame so RPC propagates
+        if (gameObject != null)
+        {
+            PhotonNetwork.Destroy(gameObject);
         }
     }
 }

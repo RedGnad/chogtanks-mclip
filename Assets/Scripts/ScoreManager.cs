@@ -27,6 +27,8 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     private Dictionary<string, string> playerWallets = new Dictionary<string, string>();
     private float matchStartTime;
     private bool matchEnded = false;
+    private static int matchCycle = 0; // compteur de cycles (chaque JoinRoom -> StartMatch)
+    private bool startCoroutineLaunched = false;
     
     [Header("Coin System")]
     public GameObject coinPrefab; 
@@ -39,6 +41,8 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     private float nextPowerupSpawnTime;
     
     public static ScoreManager Instance { get; private set; }
+
+    public bool HasMatchEnded => matchEnded; // Exposé pour PhotonLauncher (détection boucle)
     
     private void Awake()
     {
@@ -69,14 +73,20 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         matchEnded = false;
         
         StopAllCoroutines();
+    startCoroutineLaunched = false;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log($"[SM] ResetManager cycle={matchCycle} t={Time.time:F1}");
+#endif
     }
     
     public override void OnJoinedRoom()
     {
-        
-        ResetManager();
-        
-        StartMatch();
+    matchCycle++;
+    ResetManager(); // attendu une seule fois (PhotonLauncher n'appelle plus Reset ici)
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log($"[SM] OnJoinedRoom cycle={matchCycle} master={PhotonNetwork.IsMasterClient}");
+#endif
+    StartMatch();
         
         if (!string.IsNullOrEmpty(PlayerSession.WalletAddress))
         {
@@ -106,6 +116,10 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             }
             
             StartCoroutine(MatchTimer());
+            startCoroutineLaunched = true;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            Debug.Log($"[SM] StartMatch(master) cycle={matchCycle} matchStartTime={matchStartTime:F1}");
+#endif
             
             SyncMatchTime(ROOM_LIFETIME);
             
@@ -116,6 +130,10 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             matchStartTime = Time.time - 1;
             
             StartCoroutine(MatchTimer());
+            startCoroutineLaunched = true;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            Debug.Log($"[SM] StartMatch(client) cycle={matchCycle} provisional matchStartTime={matchStartTime:F1}");
+#endif
         }
     }
     
@@ -139,7 +157,17 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         
         while (timeLeft > 0 && !matchEnded)
         {
+            if (!PhotonNetwork.InRoom)
+            {
+                yield break; // Room left or closed: stop timer cleanly
+            }
             timeLeft = ROOM_LIFETIME - (Time.time - matchStartTime);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (timeLeft <= 0 && !matchEnded && PhotonNetwork.IsMasterClient)
+            {
+                Debug.Log($"[SM][WARN] timeLeft<=0 avant EndMatch cycle={matchCycle} dt={(Time.time - matchStartTime):F1}");
+            }
+#endif
             int currentSecond = Mathf.Max(0, (int)timeLeft);
             
             if (LobbyUI.Instance != null)
@@ -182,7 +210,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
                 }
             }
             
-            if (PhotonNetwork.IsMasterClient && Time.time > nextSyncTime)
+            if (!matchEnded && PhotonNetwork.IsMasterClient && PhotonNetwork.InRoom && Time.time > nextSyncTime)
             {
                 SyncMatchTime(timeLeft);
                 nextSyncTime = Time.time + 5f; 
@@ -190,7 +218,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             
             yield return null;
             
-            if (timeLeft <= 0 && PhotonNetwork.IsMasterClient)
+            if (timeLeft <= 0 && PhotonNetwork.IsMasterClient && PhotonNetwork.InRoom && !matchEnded)
             {
                 EndMatch();
             }
@@ -458,7 +486,28 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     {
         if (matchEnded) return;
         matchEnded = true;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log($"[SM] EndMatch cycle={matchCycle} t={Time.time - matchStartTime:F1}s scores={playerScores.Count}");
+#endif
         
+        // Marquer la room comme terminée et la retirer du matchmaking (master uniquement)
+        if (PhotonNetwork.IsMasterClient && PhotonNetwork.CurrentRoom != null)
+        {
+            try
+            {
+                PhotonNetwork.CurrentRoom.IsOpen = false;
+                PhotonNetwork.CurrentRoom.IsVisible = false;
+                var props = new ExitGames.Client.Photon.Hashtable { { "ended", 1 } };
+                PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+            }
+            catch (System.Exception e)
+            {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                Debug.LogWarning($"[SM] Failed to flag room ended: {e.Message}");
+#endif
+            }
+        }
+
         if (LobbyUI.Instance != null)
         {
             LobbyUI.Instance.UpdateRoomStatus("Match ended!");
@@ -641,7 +690,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     private void SyncScores()
     {
-        if (!PhotonNetwork.IsMasterClient) return;
+        if (!PhotonNetwork.IsMasterClient || matchEnded || !PhotonNetwork.InRoom) return;
         
         List<object> scoreList = new List<object>();
         foreach (var pair in playerScores)
@@ -656,7 +705,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     private void SyncMatchTime(float timeLeft)
     {
-        if (!PhotonNetwork.IsMasterClient) return;
+        if (!PhotonNetwork.IsMasterClient || matchEnded || !PhotonNetwork.InRoom) return;
         
         RaiseEventOptions options = new RaiseEventOptions { Receivers = ReceiverGroup.All };
         PhotonNetwork.RaiseEvent(SYNC_TIMER_EVENT, timeLeft, options, SendOptions.SendReliable);
@@ -785,6 +834,14 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     public bool IsMatchEnded()
     {
-        return matchEnded || (Time.time - matchStartTime) >= ROOM_LIFETIME;
+    bool endedTime = (Time.time - matchStartTime) >= ROOM_LIFETIME;
+    bool result = matchEnded || endedTime;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    if (result && !matchEnded && endedTime && startCoroutineLaunched)
+    {
+        // Timer naturally elapsed; ok.
+    }
+#endif
+    return result;
     }
 }

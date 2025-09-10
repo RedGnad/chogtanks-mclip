@@ -567,6 +567,20 @@ public class LobbyUI : MonoBehaviourPun, IMatchmakingCallbacks
         }
     }
 
+    // Permet à PhotonLauncher de réactiver le bouton après OnLeftRoom sans dupliquer la logique OnPhotonReady
+    public void EnablePlayButton(string labelOverride = null)
+    {
+        if (goButton != null)
+        {
+            goButton.interactable = true;
+            var goText = goButton.GetComponentInChildren<TMP_Text>();
+            if (goText != null)
+            {
+                goText.text = string.IsNullOrEmpty(labelOverride) ? "Brawl" : labelOverride;
+            }
+        }
+    }
+
     public void OnJoinRoomFailedUI()
     {
         createdCodeText.text = "No room found with this code.";

@@ -3,6 +3,7 @@ using Photon.Realtime;
 using UnityEngine;
 using System.Linq; 
 using System.Collections.Generic; 
+using ExitGames.Client.Photon; // Hashtable for custom room props
 
 public class PhotonLauncher : MonoBehaviourPunCallbacks
 {
@@ -137,8 +138,12 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
                 
                 StartCoroutine(ReturnToLobbyAfterDelay(6));
             }
-            
-            StartCoroutine(AutoDestroyAndRestart(uiInstance));
+            // Soft restart (respawn in same room before real leave) provoquait des états incohérents
+            // Désactivé par défaut; réactiver seulement si on implémente un vrai rematch in-room.
+            if (enableSoftRestartFlow)
+            {
+                StartCoroutine(AutoDestroyAndRestart(uiInstance));
+            }
         }
     }
 
@@ -184,15 +189,22 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
         }
         
         yield return new WaitForSeconds(seconds);
-        
-        LobbyUI lobbyUI = FindObjectOfType<LobbyUI>();
-        if (lobbyUI != null)
+        // Nouvelle boucle: on quitte réellement la room pour éviter ré-usage d'une room fermée / état sale
+        if (PhotonNetwork.InRoom)
         {
-            lobbyUI.OnBackToLobby();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            Debug.Log("[MATCH LOOP] Leaving room after game over");
+#endif
+            PhotonNetwork.LeaveRoom();
         }
         else
         {
-            Debug.LogError("[PHOTON] LobbyUI non trouvé !");
+            // Si déjà hors room (rare): fallback UI
+            var lobbyUI = FindObjectOfType<LobbyUI>();
+            if (lobbyUI != null)
+            {
+                lobbyUI.OnBackToLobby();
+            }
         }
     }
     
@@ -230,7 +242,11 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
 
     [Header("Room Settings")]
     public string roomName = "";
-    public byte maxPlayers =8;
+    public byte maxPlayers = 2; // Reduced for testing auto public room creation cascade
+
+    [Header("Match Flow (Debug)")]
+    [Tooltip("Réactive l'ancien flux de soft restart (respawn dans la room avant de la quitter). Désactiver pour stabilité.")]
+    public bool enableSoftRestartFlow = false;
 
     public LobbyUI lobbyUI;
 
@@ -246,6 +262,107 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
         }
         return new string(code);
     }
+
+    // ===== Auto-room matching (quick play) =====
+    private const string ROOM_PREFIX = "BRWL-"; // interne
+    private const int CREATE_RETRY_MAX = 2;
+    private int createRetryCount = 0;
+    private System.Random roomRng = new System.Random();
+    private bool pendingDelayedDecision = false;
+    private float lastRoomListUpdateRealtime = -999f;
+    private bool lobbyReady = false; // true after first lobby room list
+    private bool queuedQuickPlay = false; // user pressed quick play before lobby ready
+    // --- New JoinRandom-based quick play state ---
+    private int randomJoinAttempts = 0; // 0 initial, 1 retry
+    private bool quickPlayInProgress = false;
+    private const string ROOM_PROP_MODE_KEY = "mode";
+    private const string ROOM_PROP_MODE_VALUE_PUBLIC = "public";
+    private const string ROOM_PROP_ENDED_KEY = "ended"; // 0 = active, 1 = finished
+
+    private string GenerateMatchRoomName()
+    {
+        string timePart = System.DateTime.UtcNow.ToString("HHmmss");
+        string randPart = roomRng.Next(0, 4095).ToString("X3");
+        return ROOM_PREFIX + timePart + "-" + randPart;
+    }
+
+    // Replaced old room-list based selection with JoinRandom strategy
+    private void StartQuickPlay()
+    {
+    if (quickPlayInProgress)
+    {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[MATCHMAKER] QuickPlay already in progress");
+#endif
+        return;
+    }
+    if (!PhotonNetwork.IsConnectedAndReady)
+    {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[MATCHMAKER] Not connected yet – ignoring quick play");
+#endif
+        return;
+    }
+    if (PhotonNetwork.InRoom)
+    {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[MATCHMAKER] Already in a room -> no action");
+#endif
+        return;
+    }
+    quickPlayInProgress = true;
+    randomJoinAttempts = 0;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log("[MATCHMAKER] QuickPlay start -> JoinRandom attempt #0");
+#endif
+    AttemptJoinRandom();
+    }
+
+    private void AttemptJoinRandom()
+    {
+    Hashtable expected = new Hashtable { { ROOM_PROP_MODE_KEY, ROOM_PROP_MODE_VALUE_PUBLIC }, { ROOM_PROP_ENDED_KEY, 0 } };
+    PhotonNetwork.JoinRandomRoom(expected, maxPlayers);
+    }
+
+    private System.Collections.IEnumerator RetryJoinRandomWithJitter()
+    {
+    float wait = UnityEngine.Random.Range(0.05f, 0.15f);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log($"[MATCHMAKER] Scheduling jitter retry in {wait:F2}s");
+#endif
+    yield return new WaitForSeconds(wait);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log("[MATCHMAKER] JoinRandom attempt #1");
+#endif
+    AttemptJoinRandom();
+    }
+
+    private void CreatePublicMatchRoom()
+    {
+    string name = GenerateMatchRoomName();
+    roomName = name;
+        RoomOptions options = new RoomOptions
+        {
+            MaxPlayers = maxPlayers,
+            IsVisible = true,
+            IsOpen = true,
+            CleanupCacheOnLeave = true,
+            EmptyRoomTtl = 0,
+            CustomRoomProperties = new Hashtable {
+                { ROOM_PROP_MODE_KEY, ROOM_PROP_MODE_VALUE_PUBLIC },
+                { ROOM_PROP_ENDED_KEY, 0 }
+            },
+            CustomRoomPropertiesForLobby = new string[] { ROOM_PROP_MODE_KEY, ROOM_PROP_ENDED_KEY }
+        };
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log($"[MATCHMAKER] Creating new public room {name}");
+#endif
+    PhotonNetwork.CreateRoom(name, options, TypedLobby.Default);
+    }
+
+    // Old CreateNewRoom removed (replaced by CreatePublicMatchRoom)
+
+    // Removed DelayedRoomDecision (legacy room list strategy)
 
     public void CreatePrivateRoom()
     {
@@ -366,16 +483,16 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
 
         if (!PhotonNetwork.IsConnected)
         {
-            
             PhotonNetwork.NetworkingClient.LoadBalancingPeer.DisconnectTimeout = 300000; 
             PhotonNetwork.NetworkingClient.LoadBalancingPeer.TimePingInterval = 5000; 
             PhotonNetwork.KeepAliveInBackground = 60; 
-            
             PhotonNetwork.ConnectUsingSettings();
         }
+    else { /* already connected */ }
         
         StartCoroutine(ConnectionHeartbeat());
     }
+    // EnsureLobby removed for JoinRandom strategy (kept commented out)
     
     private System.Collections.IEnumerator ConnectionHeartbeat()
     {
@@ -406,6 +523,10 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
     {
         isConnectedAndReady = true;
         wasDisconnected = false; 
+    lobbyReady = false; // kept for legacy features; not required for quick play
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    Debug.Log("[MATCHMAKER] ConnectedToMaster (no lobby dependency)");
+#endif
         
         if (lobbyUI == null) lobbyUI = FindObjectOfType<LobbyUI>();
         if (lobbyUI != null)
@@ -483,10 +604,9 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
         
         soundAlreadyPlayed = false;
         
-        if (ScoreManager.Instance != null) 
-        {
-            ScoreManager.Instance.ResetManager();
-        }
+    // IMPORTANT: Ne plus appeler ResetManager ici pour ne pas annuler StartMatch() lancé par ScoreManager.OnJoinedRoom()
+    // (Double reset supprimait la coroutine du timer => timer figé à 0 et plus de respawn)
+    // ScoreManager gère maintenant seul son cycle join/reset.
         
         var spawner = FindObjectOfType<PhotonTankSpawner>();
         if (spawner != null)
@@ -497,6 +617,30 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
         {
             //Debug.LogError("[PhotonLauncher] PhotonTankSpawner non trouvé dans la scène !");
         }
+        // Nettoyer toute ancienne UI de fin de match éventuellement restée
+        foreach (var ui in GameObject.FindGameObjectsWithTag("GameOverUI"))
+        {
+            GameObject.Destroy(ui);
+        }
+        // Reset matchmaking state allowing future quick plays
+        quickPlayInProgress = false;
+        randomJoinAttempts = 0;
+    }
+
+    public override void OnLeftRoom()
+    {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[MATCH LOOP] OnLeftRoom -> returning to lobby UI");
+#endif
+        quickPlayInProgress = false;
+        randomJoinAttempts = 0;
+        var lobbyUI = FindObjectOfType<LobbyUI>();
+        if (lobbyUI != null)
+        {
+            lobbyUI.OnBackToLobby();
+            // Optionally re-enable play button if it was disabled
+            lobbyUI.EnablePlayButton(); // Requires method; add no-op if absent.
+        }
     }
 
     public override void OnJoinRoomFailed(short returnCode, string message)
@@ -506,7 +650,9 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
             photonView.RPC("RequestAdminAccess", RpcTarget.MasterClient, PlayerSession.WalletAddress);
             return;
         }
-        
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log($"[MATCHMAKER] JoinRoomFailed code={returnCode} msg={message}");
+#endif
         if (lobbyUI == null) lobbyUI = FindObjectOfType<LobbyUI>();
         if (lobbyUI != null)
         {
@@ -536,34 +682,39 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
 
     public void JoinRandomPublicRoom()
     {
-        PhotonNetwork.JoinRandomRoom();
+        StartQuickPlay();
     }
     
     public override void OnJoinRandomFailed(short returnCode, string message)
     {
-        string globalRoomName = "GlobalBrawl";
-        roomName = globalRoomName;
-        
-        RoomOptions options = new RoomOptions
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log($"[MATCHMAKER] JoinRandomFailed attempt={randomJoinAttempts} code={returnCode} msg={message}");
+#endif
+        if (randomJoinAttempts == 0 && returnCode == 32760) // No match found first try
         {
-            MaxPlayers = maxPlayers,
-            IsVisible = true,
-            IsOpen = true,
-            PublishUserId = false,
-            CleanupCacheOnLeave = true
-        };
-        
-        PhotonNetwork.JoinOrCreateRoom(globalRoomName, options, TypedLobby.Default);
+            randomJoinAttempts = 1;
+            StartCoroutine(RetryJoinRandomWithJitter());
+            return;
+        }
+        CreatePublicMatchRoom();
     }
 
     public override void OnRoomListUpdate(List<RoomInfo> roomList)
     {
-        cachedRoomList = roomList;
+        cachedRoomList = roomList; // informational only now
+        lastRoomListUpdateRealtime = Time.realtimeSinceStartup;
+        if (!lobbyReady)
+        {
+            lobbyReady = true; // legacy flag, may be reused for UI
+        }
     }
 
 
     public void JoinOrCreatePublicRoom()
     {
-        JoinRandomPublicRoom();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[MATCHMAKER] QuickPlay requested");
+#endif
+        StartQuickPlay();
     }
 }

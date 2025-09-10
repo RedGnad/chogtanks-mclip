@@ -414,7 +414,15 @@ public class ShellCollisionHandler : MonoBehaviourPun
             Destroy(explosion, 3f);
         }
         
+    // Send particles RPC before destroying this projectile. Not buffered to avoid cache bloat.
+    if (isExplosiveShot)
+    {
+        photonView.RPC("PlayExplosiveParticlesRPC", RpcTarget.Others, explosionPos);
+    }
+    else
+    {
         photonView.RPC("PlayParticlesRPC", RpcTarget.Others, explosionPos);
+    }
         
         PhotonNetwork.Destroy(gameObject);
     }
@@ -435,7 +443,21 @@ public class ShellCollisionHandler : MonoBehaviourPun
     private void PlayParticlesRPC(Vector2 pos)
     {
         if (particleOnlyExplosionPrefab == null) return;
-        Instantiate(particleOnlyExplosionPrefab, pos, Quaternion.identity);
+        GameObject fx = Instantiate(particleOnlyExplosionPrefab, pos, Quaternion.identity);
+        Destroy(fx, 3f);
+    }
+
+    [PunRPC]
+    private void PlayExplosiveParticlesRPC(Vector2 pos)
+    {
+        GameObject prefab = explosiveVFXPrefab != null ? explosiveVFXPrefab : particleOnlyExplosionPrefab;
+        if (prefab == null) return;
+        GameObject fx = Instantiate(prefab, pos, Quaternion.identity);
+        if (prefab == explosiveVFXPrefab)
+        {
+            fx.transform.localScale = Vector3.one * (explosiveRadius / 2f);
+        }
+        Destroy(fx, 3f);
     }
 
     private void RestoreGravity()

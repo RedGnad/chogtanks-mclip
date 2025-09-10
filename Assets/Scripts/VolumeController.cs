@@ -14,6 +14,13 @@ public class VolumeController : MonoBehaviour
     private const string MUSIC_PREF_KEY = "MusicVolumePreference";
     private const string SFX_PREF_KEY = "SfxVolumePreference";
 
+    // Centralised defaults (adjust here only)
+    private const float DEFAULT_MUSIC_VOLUME = 0.33f;
+    private const float DEFAULT_SFX_VOLUME = 0.33f; // Wanted lower than old 0.75
+
+    // If earlier builds saved a louder default (e.g. 0.75) we can treat it as a legacy value
+    private const float LEGACY_HIGH_SFX_THRESHOLD = 0.74f; // anything >= this assumed legacy default
+
     void Awake()
     {
         if (Instance == null)
@@ -34,11 +41,29 @@ public class VolumeController : MonoBehaviour
 
     private void LoadVolumeSettings()
     {
-        float musicVolume = PlayerPrefs.GetFloat(MUSIC_PREF_KEY, 0.75f);
-        SetMusicVolume(musicVolume, false); 
+        // Music
+        float musicVolume = PlayerPrefs.HasKey(MUSIC_PREF_KEY)
+            ? PlayerPrefs.GetFloat(MUSIC_PREF_KEY)
+            : DEFAULT_MUSIC_VOLUME;
+        SetMusicVolume(musicVolume, false);
 
-        float sfxVolume = PlayerPrefs.GetFloat(SFX_PREF_KEY, 0.75f);
-        SetSfxVolume(sfxVolume, false); 
+        // SFX (migration: if an existing saved value looks like the old loud default, override once)
+        float sfxVolume;
+        if (!PlayerPrefs.HasKey(SFX_PREF_KEY))
+        {
+            sfxVolume = DEFAULT_SFX_VOLUME;
+        }
+        else
+        {
+            float stored = PlayerPrefs.GetFloat(SFX_PREF_KEY);
+            sfxVolume = (stored >= LEGACY_HIGH_SFX_THRESHOLD) ? DEFAULT_SFX_VOLUME : stored;
+            if (stored != sfxVolume)
+            {
+                PlayerPrefs.SetFloat(SFX_PREF_KEY, sfxVolume);
+                PlayerPrefs.Save();
+            }
+        }
+        SetSfxVolume(sfxVolume, false);
     }
 
     private float ConvertToDecibel(float volume)
@@ -70,11 +95,18 @@ public class VolumeController : MonoBehaviour
 
     public float GetMusicVolume()
     {
-        return PlayerPrefs.GetFloat(MUSIC_PREF_KEY, 0.75f);
+        return PlayerPrefs.GetFloat(MUSIC_PREF_KEY, DEFAULT_MUSIC_VOLUME);
     }
 
     public float GetSfxVolume()
     {
-        return PlayerPrefs.GetFloat(SFX_PREF_KEY, 0.75f);
+        return PlayerPrefs.GetFloat(SFX_PREF_KEY, DEFAULT_SFX_VOLUME);
+    }
+
+    // Optional: call this from a settings UI button to force reset.
+    public void ResetToDefaultVolumes()
+    {
+        SetMusicVolume(DEFAULT_MUSIC_VOLUME, true);
+        SetSfxVolume(DEFAULT_SFX_VOLUME, true);
     }
 }

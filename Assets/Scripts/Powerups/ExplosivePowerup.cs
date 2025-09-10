@@ -20,11 +20,8 @@ public class ExplosivePowerup : MonoBehaviourPun
             // Use an RPC to grant the power-up to the specific client who owns the tank
             tank.photonView.RPC("RPC_ActivateExplosivePowerup", tank.photonView.Owner);
 
-            // Play pickup sound for everyone via an RPC on this powerup's PhotonView
             photonView.RPC("RPC_PlayPickupFX", RpcTarget.All);
-
-            // Master client destroys the power-up object
-            PhotonNetwork.Destroy(gameObject);
+            StartCoroutine(DestroyNextFrame());
         }
     }
 
@@ -34,6 +31,15 @@ public class ExplosivePowerup : MonoBehaviourPun
         if (pickupSFX != null && SFXManager.Instance != null)
         {
             SFXManager.Instance.audioSource.PlayOneShot(pickupSFX, pickupVolume);
+        }
+    }
+    private System.Collections.IEnumerator DestroyNextFrame()
+    {
+        // Wait one frame so pickup RPC reaches everyone before destroy
+        yield return null;
+        if (gameObject != null)
+        {
+            PhotonNetwork.Destroy(gameObject);
         }
     }
 }

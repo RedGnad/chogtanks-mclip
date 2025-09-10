@@ -26,3 +26,4 @@ spawnbuild/
 .env
 .env.*
 !.env.example
+chogtanks-testbuild-advanced.app/

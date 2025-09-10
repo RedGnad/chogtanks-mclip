@@ -78,6 +78,11 @@ public class SFXManager : MonoBehaviourPun
                 sfxDictionary[sfxClip.name] = sfxClip;
             }
         }
+        // Ensure ricochet_bounce key exists to silence warning if not configured in inspector
+        if (!sfxDictionary.ContainsKey("ricochet_bounce"))
+        {
+            sfxDictionary["ricochet_bounce"] = new SFXClip { name = "ricochet_bounce", clip = null, shareInMultiplayer = false, defaultVolume = 0.5f };
+        }
     }
     
     public void PlaySFX(string sfxName, float volumeMultiplier = 1f)
@@ -92,6 +97,11 @@ public class SFXManager : MonoBehaviourPun
         if (!sfxDictionary.TryGetValue(sfxName, out SFXClip sfxClip))
         {
             Debug.LogWarning($"[SFX] Audio clip not found: {sfxName}");
+            return;
+        }
+        if (sfxClip.clip == null)
+        {
+            // Silently ignore placeholder clip entries
             return;
         }
         
