@@ -21,3 +21,8 @@ spawnbuild/
 # OS generated
 .DS_Store
 ._*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
