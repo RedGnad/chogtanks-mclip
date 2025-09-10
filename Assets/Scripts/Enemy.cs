@@ -219,10 +219,10 @@ public class Enemy : MonoBehaviour
     
     private void OnTouchPlayer(GameObject player)
     {
-        if (PhotonNetwork.InRoom)
-        {
-            PhotonNetwork.LeaveRoom();
-        }
+    if (!PhotonNetwork.InRoom) return;
+
+    // Solo death path simplifié : quitter immédiatement sans UI ni delay supplémentaire
+    PhotonNetwork.LeaveRoom();
         
         EnemyManager enemyManager = FindObjectOfType<EnemyManager>();
         if (enemyManager != null)
@@ -243,17 +243,7 @@ public class Enemy : MonoBehaviour
             }
         }
         
-        LobbyUI lobbyUI = FindObjectOfType<LobbyUI>();
-        if (lobbyUI != null)
-        {
-            lobbyUI.SetDelayOnNextReturn();
-        }
-        
-        PhotonLauncher launcher = FindObjectOfType<PhotonLauncher>();
-        if (launcher != null)
-        {
-            launcher.photonView.RPC("ShowWinnerToAllRPC", RpcTarget.All, "Enemy Victory!", -1);
-        }
+    // Pas de SetDelayOnNextReturn: on veut permettre un GO immédiat
         
         Destroy(gameObject);
     }

@@ -135,8 +135,12 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
                 {
                     controller.ShowWinner(winnerName);
                 }
-                
-                StartCoroutine(ReturnToLobbyAfterDelay(6));
+
+                // Ne lancer la coroutine de leave que si on est encore dans la room (cas multi).
+                if (PhotonNetwork.InRoom)
+                {
+                    StartCoroutine(ReturnToLobbyAfterDelay(6));
+                }
             }
             // Soft restart (respawn in same room before real leave) provoquait des états incohérents
             // Désactivé par défaut; réactiver seulement si on implémente un vrai rematch in-room.
