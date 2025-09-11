@@ -221,31 +221,37 @@ public class Enemy : MonoBehaviour
     {
     if (!PhotonNetwork.InRoom) return;
 
+    // Joue le SFX de fin de partie si le manager existe
+    if (SFXManager.Instance != null)
+    {
+        SFXManager.Instance.PlayGameOverSFX();
+    }
+
     // Solo death path simplifié : quitter immédiatement sans UI ni delay supplémentaire
     PhotonNetwork.LeaveRoom();
-        
-        EnemyManager enemyManager = FindObjectOfType<EnemyManager>();
-        if (enemyManager != null)
+
+    EnemyManager enemyManager = FindObjectOfType<EnemyManager>();
+    if (enemyManager != null)
+    {
+        enemyManager.CleanupAllEnemies();
+    }
+
+    if (ScoreManager.Instance != null)
+    {
+        int currentScore = ScoreManager.Instance.GetPlayerScore(PhotonNetwork.LocalPlayer.ActorNumber);
+
+        ScoreManager.Instance.SubmitScoreToFirebase(currentScore, 0); // 0 bonus for enemy kill
+
+        ChogTanksNFTManager nftManager = FindObjectOfType<ChogTanksNFTManager>();
+        if (nftManager != null)
         {
-            enemyManager.CleanupAllEnemies();
+            nftManager.ForceRefreshAfterMatch(currentScore);
         }
-        
-        if (ScoreManager.Instance != null)
-        {
-            int currentScore = ScoreManager.Instance.GetPlayerScore(PhotonNetwork.LocalPlayer.ActorNumber);
-            
-            ScoreManager.Instance.SubmitScoreToFirebase(currentScore, 0); // 0 bonus for enemy kill
-            
-            ChogTanksNFTManager nftManager = FindObjectOfType<ChogTanksNFTManager>();
-            if (nftManager != null)
-            {
-                nftManager.ForceRefreshAfterMatch(currentScore);
-            }
-        }
-        
+    }
+
     // Pas de SetDelayOnNextReturn: on veut permettre un GO immédiat
-        
-        Destroy(gameObject);
+
+    Destroy(gameObject);
     }
     
     private void OnDestroy()

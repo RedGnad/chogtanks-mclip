@@ -64221,6 +64221,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8f90097d7603249afbeeb7175a11288f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  gameOverClip: {fileID: 8300000, guid: a4044354033e04a9182069146ea8e927, type: 3}
   audioSource: {fileID: 278777534}
   masterVolume: 1
   multiplayerVolumeMultiplier: 0.371
@@ -66420,7 +66421,7 @@ MonoBehaviour:
   - {fileID: 8300000, guid: a4044354033e04a9182069146ea8e927, type: 3}
   isConnectedAndReady: 0
   roomName: TestRoom
-  maxPlayers: 2
+  maxPlayers: 7
   enableSoftRestartFlow: 0
   lobbyUI: {fileID: 0}
   adminWallets:
@@ -75572,7 +75573,6 @@ MonoBehaviour:
   interactionScriptNames:
   - PlayerController
   checkInterval: 0.2
-  monadRpcUrl: https://monad-testnet.g.alchemy.com/v2/JD1BgcAhWzSNu8vHiT1chCKaHUq3kH6-
 --- !u!1 &1736169169
 GameObject:
   m_ObjectHideFlags: 0

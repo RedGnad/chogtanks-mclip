@@ -1,4 +1,98 @@
 mergeInto(LibraryManager.library, {
+  GetFirebaseIdTokenJS: function (
+    gameObjectNamePtr,
+    callbackMethodPtr,
+    forceRefresh
+  ) {
+    // Récupère le token Firebase côté JS et le renvoie à Unity
+    var goName = UTF8ToString(gameObjectNamePtr);
+    var callback = UTF8ToString(callbackMethodPtr);
+    var refresh = forceRefresh === 1;
+    if (typeof firebase === "undefined" || !firebase.auth) {
+      console.error("[AUTH] Firebase non initialisé");
+      return 0;
+    }
+    var user = firebase.auth().currentUser;
+    if (!user) {
+      console.error("[AUTH] Aucun utilisateur Firebase connecté");
+      if (typeof unityInstance !== "undefined") {
+        unityInstance.SendMessage(goName, callback, "");
+      }
+      return 0;
+    }
+    user
+      .getIdToken(refresh)
+      .then(function (token) {
+        if (typeof unityInstance !== "undefined") {
+          unityInstance.SendMessage(goName, callback, token);
+        }
+      })
+      .catch(function (err) {
+        console.error("[AUTH] Erreur getIdToken:", err);
+        if (typeof unityInstance !== "undefined") {
+          unityInstance.SendMessage(goName, callback, "");
+        }
+      });
+    return 1;
+  },
+
+  AuthorizedPostJS: function (
+    urlPtr,
+    bodyJsonPtr,
+    gameObjectNamePtr,
+    callbackMethodPtr
+  ) {
+    // Envoie un POST sécurisé avec le token Firebase
+    var url = UTF8ToString(urlPtr);
+    var body = UTF8ToString(bodyJsonPtr);
+    var goName = UTF8ToString(gameObjectNamePtr);
+    var callback = UTF8ToString(callbackMethodPtr);
+    if (typeof firebase === "undefined" || !firebase.auth) {
+      console.error("[POST] Firebase non initialisé");
+      return 0;
+    }
+    var user = firebase.auth().currentUser;
+    if (!user) {
+      console.error("[POST] Aucun utilisateur Firebase connecté");
+      if (typeof unityInstance !== "undefined") {
+        unityInstance.SendMessage(goName, callback, "");
+      }
+      return 0;
+    }
+    user
+      .getIdToken()
+      .then(function (token) {
+        fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + token,
+          },
+          body: body,
+        })
+          .then(function (response) {
+            return response.text();
+          })
+          .then(function (result) {
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(goName, callback, result);
+            }
+          })
+          .catch(function (err) {
+            console.error("[POST] Erreur fetch:", err);
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(goName, callback, "");
+            }
+          });
+      })
+      .catch(function (err) {
+        console.error("[POST] Erreur getIdToken:", err);
+        if (typeof unityInstance !== "undefined") {
+          unityInstance.SendMessage(goName, callback, "");
+        }
+      });
+    return 1;
+  },
   InitializeWasmErrorHandler: function () {
     window.addEventListener("error", function (e) {
       if (

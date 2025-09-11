@@ -14,6 +14,14 @@ public class SFXClip
 
 public class SFXManager : MonoBehaviourPun
 {
+    [Header("Game Over SFX")]
+    public AudioClip gameOverClip;
+
+    public void PlayGameOverSFX()
+    {
+        if (audioSource != null && gameOverClip != null)
+            audioSource.PlayOneShot(gameOverClip, masterVolume);
+    }
     [Header("Audio Settings")]
     public AudioSource audioSource;
     public float masterVolume = 1f;
@@ -33,6 +41,7 @@ public class SFXManager : MonoBehaviourPun
     [Header("Countdown Sounds")]
     public AudioClip countdownBeepSound;
     [Range(0f, 1f)]
+
     public float countdownVolume = 0.9f; 
     
     private static SFXManager instance;
