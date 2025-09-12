@@ -20,7 +20,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
 #if UNITY_WEBGL && !UNITY_EDITOR
     [DllImport("__Internal")]
-    private static extern bool SubmitScoreJS(string score, string bonus, string walletAddress);
+    private static extern bool SubmitScoreJS(string score, string bonus, string walletAddress, string matchId);
 #endif
     
     private Dictionary<int, int> playerScores = new Dictionary<int, int>(); 
@@ -634,6 +634,55 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     public void SubmitScoreToFirebase(int score, int bonus)
     {
+        string walletAddress = GetWalletAddress();
+        
+        if (string.IsNullOrEmpty(walletAddress) || walletAddress == "anonymous")
+        {
+            Debug.LogWarning("[SCOREMANAGER] Pas de wallet, pas de soumission");
+            return;
+        }
+        
+#if UNITY_WEBGL && !UNITY_EDITOR
+        Debug.Log($"[SCOREMANAGER] 🚀 Soumission sécurisée: {score} (+{bonus}) pour {walletAddress}");
+        SubmitScoreJS(score.ToString(), bonus.ToString(), walletAddress, GetCurrentMatchId());
+#else
+        Debug.Log($"[SCOREMANAGER] Score simulé (Editor): {score} (+{bonus}) pour {walletAddress}");
+#endif
+    }
+    
+    // Callbacks du serveur sécurisé
+    public void OnScoreSubmitted(string newScore)
+    {
+        if (int.TryParse(newScore, out int score))
+        {
+            Debug.Log($"[SCOREMANAGER] ✅ Score confirmé par le serveur: {score}");
+            UpdateScoreDisplay(score);
+        }
+    }
+    
+    public void OnScoreRejected(string error)
+    {
+        Debug.LogWarning($"[SCOREMANAGER] ⚠️ Score rejeté par le serveur: {error}");
+        // Optionnel: afficher un message à l'utilisateur
+    }
+    
+    public void OnScoreFailed(string error)
+    {
+        Debug.LogError($"[SCOREMANAGER] ❌ Échec soumission score: {error}");
+        // Optionnel: afficher un message d'erreur
+    }
+    
+    private void UpdateScoreDisplay(int score)
+    {
+        // Mise à jour de l'UI si nécessaire
+        if (LobbyUI.Instance != null)
+        {
+            LobbyUI.Instance.UpdatePlayerList();
+        }
+    }
+    
+    private string GetWalletAddress()
+    {
         string walletAddress = "";
         
         try
@@ -681,10 +730,14 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             walletAddress = "anonymous";
         }
         
-#if UNITY_WEBGL && !UNITY_EDITOR
-        SubmitScoreJS(score.ToString(), bonus.ToString(), walletAddress);
-#else
-#endif
+        return walletAddress;
+    }
+
+    private string GetCurrentMatchId()
+    {
+        // MatchId simple basé sur l'heure et l'ActorNumber local pour corréler côté serveur
+        string actor = PhotonNetwork.LocalPlayer != null ? PhotonNetwork.LocalPlayer.ActorNumber.ToString() : "0";
+        return $"match_{actor}_{System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
     }
     
     

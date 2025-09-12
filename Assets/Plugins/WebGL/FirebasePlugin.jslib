@@ -160,14 +160,16 @@ mergeInto(LibraryManager.library, {
     }
   },
 
-  SubmitScoreJS: function (score, bonus, walletAddress) {
+  SubmitScoreJS: function (score, bonus, walletAddress, matchId) {
     function isValidEthAddress(addr) {
       return /^0x[a-fA-F0-9]{40}$/.test(addr);
     }
+
     try {
       const scoreValue = parseInt(UTF8ToString(score), 10);
       const bonusValue = parseInt(UTF8ToString(bonus), 10) || 0;
       const address = UTF8ToString(walletAddress);
+      const matchIdStr = matchId ? UTF8ToString(matchId) : "";
 
       if (!address) {
         console.error("[SCORE] Adresse invalide ou vide");
@@ -177,131 +179,90 @@ mergeInto(LibraryManager.library, {
       const normalizedAddress = address.toLowerCase().trim();
       if (!isValidEthAddress(normalizedAddress)) {
         console.error(
-          `[SCORE][SECURITE] Adresse Ethereum invalide pour soumission score: '${normalizedAddress}'`
+          `[SCORE] Adresse Ethereum invalide: '${normalizedAddress}'`
         );
         return false;
       }
 
       const totalScore = scoreValue + bonusValue;
 
+      // Anti-spam local
       if (!window.lastScoreSessionId) {
         window.lastScoreSessionId = Date.now().toString();
         window.lastScoreValue = totalScore;
-        console.log(
-          `[SCORE] Nouvelle session de score #${window.lastScoreSessionId}, valeur: ${totalScore}`
-        );
+        console.log(`[SCORE] Nouvelle session: ${totalScore}`);
       } else if (window.lastScoreValue === totalScore) {
         console.warn(
-          `[SCORE] ⚠️ Doublon probable détecté! Score ${totalScore} déjà soumis récemment. Ignorant.`
+          `[SCORE] ⚠️ Doublon détecté! Score ${totalScore} déjà soumis. Ignorant.`
         );
         return true;
       } else {
         window.lastScoreSessionId = Date.now().toString();
         window.lastScoreValue = totalScore;
-        console.log(
-          `[SCORE] Nouvelle session de score #${window.lastScoreSessionId}, valeur: ${totalScore}`
-        );
+        console.log(`[SCORE] Nouvelle session: ${totalScore}`);
       }
 
       console.log(
-        `[SCORE] Score soumis à Firebase pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
+        `[SCORE] Score soumis pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
       );
 
-      firebase.auth().onAuthStateChanged((user) => {
-        if (user) {
-          const db = firebase.firestore();
-          const docRef = db.collection("WalletScores").doc(normalizedAddress);
+      // SOUMISSION SÉCURISÉE UNIQUEMENT VIA SERVEUR
+      const serverUrl =
+        "https://chogtanks-nft-servers.onrender.com/api/firebase/submit-score";
+      const requestData = {
+        walletAddress: normalizedAddress,
+        score: scoreValue,
+        bonus: bonusValue,
+        matchId: matchIdStr,
+        timestamp: Date.now(),
+      };
 
-          docRef
-            .get()
-            .then((doc) => {
-              if (!doc.exists) {
-                docRef
-                  .set({
-                    score: totalScore,
-                    nftLevel: 0,
-                    walletAddress: normalizedAddress,
-                    lastUpdated:
-                      firebase.firestore.FieldValue.serverTimestamp(),
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                  })
-                  .then(() => {
-                    console.log(
-                      `[SCORE] ✅ Nouveau document créé pour ${normalizedAddress} avec score: ${totalScore}`
-                    );
-                  })
-                  .catch((error) => {
-                    console.error(
-                      "[SCORE] ❌ Erreur création document:",
-                      error
-                    );
-                  });
-              } else {
-                const currentScore = Number(doc.data().score || 0);
+      console.log(
+        `[SECURE-SCORE] Soumission sécurisée pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
+      );
 
-                const newScore = currentScore + totalScore;
-                console.log(
-                  `[SCORE] Addition des scores: ${currentScore} + ${totalScore} = ${newScore}`
-                );
-
-                docRef
-                  .update(
-                    {
-                      score: newScore,
-                      walletAddress: normalizedAddress,
-                      lastUpdated:
-                        firebase.firestore.FieldValue.serverTimestamp(),
-                    },
-                    { merge: true }
-                  )
-                  .then(() => {
-                    console.log(
-                      `[SCORE] 🚀 Score soumis à Firebase pour ${normalizedAddress}: ${newScore} (${currentScore} + ${totalScore})`
-                    );
-                  })
-                  .catch((error) => {
-                    console.warn(
-                      "[SCORE] ⚠️ Première tentative échouée, essai alternatif:",
-                      error
-                    );
-
-                    docRef
-                      .set(
-                        {
-                          score: newScore,
-                          walletAddress: normalizedAddress,
-                          lastUpdated:
-                            firebase.firestore.FieldValue.serverTimestamp(),
-                        },
-                        { merge: true }
-                      )
-                      .then(() => {
-                        console.log(
-                          `[SCORE] ✅ Score mis à jour (méthode alternative) pour ${normalizedAddress}: ${newScore}`
-                        );
-                      })
-                      .catch((error2) => {
-                        console.error(
-                          "[SCORE] ❌ Erreur critique mise à jour score:",
-                          error2
-                        );
-                      });
-                  });
-              }
-            })
-            .catch((error) => {
-              console.error("[SCORE] ❌ Erreur récupération document:", error);
-            });
-        } else {
-          console.log("[SCORE] Auth anonyme en cours...");
-          firebase
-            .auth()
-            .signInAnonymously()
-            .catch((error) => {
-              console.error("[SCORE] Erreur auth:", error);
-            });
-        }
-      });
+      fetch(serverUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestData),
+        signal: AbortSignal.timeout(5000),
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.success) {
+            console.log("[SECURE-SCORE] ✅ Score validé et soumis:", data);
+            // Mise à jour UI avec le score confirmé par le serveur
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(
+                "ScoreManager",
+                "OnScoreSubmitted",
+                data.newScore || totalScore
+              );
+            }
+          } else {
+            console.warn(
+              "[SECURE-SCORE] ⚠️ Score rejeté par le serveur:",
+              data
+            );
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(
+                "ScoreManager",
+                "OnScoreRejected",
+                data.error || "Score rejeté"
+              );
+            }
+          }
+        })
+        .catch((error) => {
+          console.error("[SECURE-SCORE] ❌ Erreur serveur:", error);
+          if (typeof unityInstance !== "undefined") {
+            unityInstance.SendMessage(
+              "ScoreManager",
+              "OnScoreFailed",
+              "Serveur indisponible"
+            );
+          }
+        });
 
       return true;
     } catch (error) {
