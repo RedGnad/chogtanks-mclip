@@ -189,7 +189,7 @@ namespace Sample
                 "10143", "Monad Testnet",
                 new Currency("Monad","MON",18),
                 new BlockExplorer("Monad Explorer","https://explorer.testnet.monad.xyz"),
-                "https://testnet-rpc.monad.xyz/",
+                "https://monad-testnet.g.alchemy.com/v2/JD1BgcAhWzSNu8vHiT1chCKaHUq3kH6-",
                 true,
                 "https://docs.monad.xyz/img/monad_logo.png"
             );
