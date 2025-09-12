@@ -160,6 +160,48 @@ mergeInto(LibraryManager.library, {
     }
   },
 
+  // Demande un matchToken au serveur et le stocke dans window.__currentMatchToken
+  RequestMatchTokenJS: function () {
+    try {
+      if (typeof fetch === "undefined") return false;
+      const url = "https://chogtanks-nft-servers.onrender.com/api/match/start";
+      function call(idToken) {
+        const headers = { "Content-Type": "application/json" };
+        if (idToken) headers["Authorization"] = "Bearer " + idToken;
+        fetch(url, { method: "POST", headers })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data && data.matchToken) {
+              window.__currentMatchToken = data.matchToken;
+              // Reset anti-doublon pour le nouveau match
+              window.__lastScoreKey = null;
+              console.log("[MATCH] ✅ Token reçu");
+            } else {
+              console.warn("[MATCH] ⚠️ Pas de token match");
+            }
+          })
+          .catch((e) => console.error("[MATCH] ❌ Erreur:", e));
+      }
+      if (
+        typeof firebase !== "undefined" &&
+        firebase.auth &&
+        firebase.auth().currentUser
+      ) {
+        firebase
+          .auth()
+          .currentUser.getIdToken()
+          .then(call)
+          .catch(() => call(null));
+      } else {
+        call(null);
+      }
+      return true;
+    } catch (e) {
+      console.error("[MATCH] ❌ Exception:", e);
+      return false;
+    }
+  },
+
   SubmitScoreJS: function (score, bonus, walletAddress, matchId) {
     function isValidEthAddress(addr) {
       return /^0x[a-fA-F0-9]{40}$/.test(addr);
@@ -185,21 +227,19 @@ mergeInto(LibraryManager.library, {
       }
 
       const totalScore = scoreValue + bonusValue;
+      const matchKey =
+        matchIdStr && matchIdStr.length > 0
+          ? `${matchIdStr}:${totalScore}`
+          : `noMatch:${Date.now()}:${totalScore}`;
 
-      // Anti-spam local
-      if (!window.lastScoreSessionId) {
-        window.lastScoreSessionId = Date.now().toString();
-        window.lastScoreValue = totalScore;
-        console.log(`[SCORE] Nouvelle session: ${totalScore}`);
-      } else if (window.lastScoreValue === totalScore) {
-        console.warn(
-          `[SCORE] ⚠️ Doublon détecté! Score ${totalScore} déjà soumis. Ignorant.`
-        );
+      // Anti-doublon local par match (clé = matchId:score)
+      if (!window.__lastScoreKey) {
+        window.__lastScoreKey = matchKey;
+      } else if (window.__lastScoreKey === matchKey) {
+        console.warn(`[SCORE] ⚠️ Doublon détecté pour ${matchKey}. Ignoré.`);
         return true;
       } else {
-        window.lastScoreSessionId = Date.now().toString();
-        window.lastScoreValue = totalScore;
-        console.log(`[SCORE] Nouvelle session: ${totalScore}`);
+        window.__lastScoreKey = matchKey;
       }
 
       console.log(
@@ -215,54 +255,83 @@ mergeInto(LibraryManager.library, {
         bonus: bonusValue,
         matchId: matchIdStr,
         timestamp: Date.now(),
+        matchToken:
+          typeof window !== "undefined" && window.__currentMatchToken
+            ? window.__currentMatchToken
+            : "",
       };
 
       console.log(
         `[SECURE-SCORE] Soumission sécurisée pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
       );
 
-      fetch(serverUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestData),
-        signal: AbortSignal.timeout(5000),
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          if (data.success) {
-            console.log("[SECURE-SCORE] ✅ Score validé et soumis:", data);
-            // Mise à jour UI avec le score confirmé par le serveur
-            if (typeof unityInstance !== "undefined") {
-              unityInstance.SendMessage(
-                "ScoreManager",
-                "OnScoreSubmitted",
-                data.newScore || totalScore
-              );
-            }
-          } else {
-            console.warn(
-              "[SECURE-SCORE] ⚠️ Score rejeté par le serveur:",
-              data
-            );
-            if (typeof unityInstance !== "undefined") {
-              unityInstance.SendMessage(
-                "ScoreManager",
-                "OnScoreRejected",
-                data.error || "Score rejeté"
-              );
-            }
-          }
+      function doFetch(idToken) {
+        const headers = { "Content-Type": "application/json" };
+        if (idToken) headers["Authorization"] = "Bearer " + idToken;
+        fetch(serverUrl, {
+          method: "POST",
+          headers: headers,
+          body: JSON.stringify(requestData),
+          signal: AbortSignal.timeout(5000),
         })
-        .catch((error) => {
-          console.error("[SECURE-SCORE] ❌ Erreur serveur:", error);
-          if (typeof unityInstance !== "undefined") {
-            unityInstance.SendMessage(
-              "ScoreManager",
-              "OnScoreFailed",
-              "Serveur indisponible"
-            );
-          }
-        });
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              console.log("[SECURE-SCORE] ✅ Score validé et soumis:", data);
+              if (typeof unityInstance !== "undefined") {
+                unityInstance.SendMessage(
+                  "ScoreManager",
+                  "OnScoreSubmitted",
+                  data.newScore || totalScore
+                );
+              }
+            } else {
+              console.warn(
+                "[SECURE-SCORE] ⚠️ Score rejeté par le serveur:",
+                data
+              );
+              if (typeof unityInstance !== "undefined") {
+                unityInstance.SendMessage(
+                  "ScoreManager",
+                  "OnScoreRejected",
+                  data.error || "Score rejeté"
+                );
+              }
+            }
+          })
+          .catch((error) => {
+            console.error("[SECURE-SCORE] ❌ Erreur serveur:", error);
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(
+                "ScoreManager",
+                "OnScoreFailed",
+                "Serveur indisponible"
+              );
+            }
+          });
+      }
+
+      try {
+        if (
+          typeof firebase !== "undefined" &&
+          firebase.auth &&
+          firebase.auth().currentUser
+        ) {
+          firebase
+            .auth()
+            .currentUser.getIdToken()
+            .then(function (token) {
+              doFetch(token);
+            })
+            .catch(function () {
+              doFetch(null);
+            });
+        } else {
+          doFetch(null);
+        }
+      } catch (e) {
+        doFetch(null);
+      }
 
       return true;
     } catch (error) {
@@ -782,6 +851,179 @@ mergeInto(LibraryManager.library, {
   },
 
   GetNFTStateJS: function (walletAddress) {
+    try {
+      const address = UTF8ToString(walletAddress);
+      const normalizedAddress = address.toLowerCase().trim();
+      console.log(
+        `[NFT][DEBUG] GetNFTStateJS - Récupération de l'état NFT pour: ${normalizedAddress}`
+      );
+
+      let response = {
+        hasNFT: false,
+        level: 0,
+        score: 0,
+        walletAddress: normalizedAddress,
+      };
+
+      // Utiliser le serveur sécurisé au lieu de Firebase direct
+      console.log("[NFT][DEBUG] Lecture via serveur sécurisé");
+      fetch(
+        `https://chogtanks-nft-servers.onrender.com/api/firebase/get-score/${normalizedAddress}`
+      )
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          console.log("[NFT][DEBUG] Données reçues du serveur:", data);
+          const level = data.nftLevel || 0;
+          const score = data.score || 0;
+
+          response = {
+            hasNFT: level > 0,
+            level: level,
+            score: score,
+            walletAddress: normalizedAddress,
+          };
+
+          console.log("[NFT][DEBUG] État récupéré:", JSON.stringify(response));
+          if (typeof unityInstance !== "undefined") {
+            console.log(
+              "[NFT][DEBUG] Envoi du résultat à Unity via SendMessage"
+            );
+            unityInstance.SendMessage(
+              "ChogTanksNFTManager",
+              "OnNFTStateLoaded",
+              JSON.stringify(response)
+            );
+          }
+        })
+        .catch((error) => {
+          console.error("[NFT][ERREUR] Erreur serveur sécurisé:", error);
+          // Fallback vers Firebase direct si le serveur échoue
+          console.log("[NFT][DEBUG] Fallback vers Firebase direct");
+          GetNFTStateFromFirebaseDirect(normalizedAddress);
+        });
+
+      console.log("[NFT][DEBUG] GetNFTStateJS terminé avec succès");
+      return true;
+    } catch (error) {
+      console.error(
+        "[NFT][ERREUR CRITIQUE] Exception dans GetNFTStateJS:",
+        error
+      );
+      try {
+        if (typeof unityInstance !== "undefined") {
+          const fallbackResponse = {
+            hasNFT: false,
+            level: 0,
+            score: 0,
+            walletAddress: UTF8ToString(walletAddress).toLowerCase().trim(),
+          };
+          unityInstance.SendMessage(
+            "ChogTanksNFTManager",
+            "OnNFTStateLoaded",
+            JSON.stringify(fallbackResponse)
+          );
+        }
+      } catch (sendError) {
+        console.error(
+          "[NFT][ERREUR CRITIQUE] Impossible d'envoyer le fallback:",
+          sendError
+        );
+      }
+      return false;
+    }
+  },
+
+  GetNFTStateFromFirebaseDirect: function (normalizedAddress) {
+    // Fonction de fallback pour lire directement depuis Firebase
+    if (typeof firebase === "undefined" || !firebase.apps.length) {
+      console.error(
+        "[NFT][ERREUR] Firebase n'est pas initialisé dans GetNFTStateFromFirebaseDirect"
+      );
+      return;
+    }
+
+    console.log("[NFT][DEBUG] Fallback: Lecture directe Firebase");
+    firebase.auth().onAuthStateChanged(function (user) {
+      if (user) {
+        console.log("[NFT][DEBUG] Fallback: Utilisateur authentifié");
+        const db = firebase.firestore();
+        db.collection("WalletScores")
+          .doc(normalizedAddress)
+          .get()
+          .then(function (doc) {
+            let response = {
+              hasNFT: false,
+              level: 0,
+              score: 0,
+              walletAddress: normalizedAddress,
+            };
+
+            if (doc.exists) {
+              const data = doc.data();
+              const level = data.level || data.nftLevel || 0;
+              const score = data.score || 0;
+              response = {
+                hasNFT: level > 0,
+                level: level,
+                score: score,
+                walletAddress: normalizedAddress,
+              };
+            }
+
+            console.log(
+              "[NFT][DEBUG] Fallback: État récupéré:",
+              JSON.stringify(response)
+            );
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(
+                "ChogTanksNFTManager",
+                "OnNFTStateLoaded",
+                JSON.stringify(response)
+              );
+            }
+          })
+          .catch(function (error) {
+            console.error("[NFT][ERREUR] Fallback Firebase échoué:", error);
+            // Dernier recours: valeurs par défaut
+            const fallbackResponse = {
+              hasNFT: false,
+              level: 0,
+              score: 0,
+              walletAddress: normalizedAddress,
+            };
+            if (typeof unityInstance !== "undefined") {
+              unityInstance.SendMessage(
+                "ChogTanksNFTManager",
+                "OnNFTStateLoaded",
+                JSON.stringify(fallbackResponse)
+              );
+            }
+          });
+      } else {
+        console.log("[NFT][DEBUG] Fallback: Utilisateur non authentifié");
+        const fallbackResponse = {
+          hasNFT: false,
+          level: 0,
+          score: 0,
+          walletAddress: normalizedAddress,
+        };
+        if (typeof unityInstance !== "undefined") {
+          unityInstance.SendMessage(
+            "ChogTanksNFTManager",
+            "OnNFTStateLoaded",
+            JSON.stringify(fallbackResponse)
+          );
+        }
+      }
+    });
+  },
+
+  GetNFTStateJS_OLD: function (walletAddress) {
     try {
       const address = UTF8ToString(walletAddress);
       const normalizedAddress = address.toLowerCase().trim(); //
@@ -1546,7 +1788,7 @@ mergeInto(LibraryManager.library, {
   ) {
     try {
       const address = UTF8ToString(walletAddress);
-      const normalizedAddress = address.toLowerCase().trim(); //
+      const normalizedAddress = address.toLowerCase().trim();
       const level = blockchainLevel;
       const nftTokenId = tokenId;
 
@@ -1556,6 +1798,13 @@ mergeInto(LibraryManager.library, {
       console.log(
         `[FIREBASE-SYNC]  Blockchain data: level=${level}, tokenId=${nftTokenId}`
       );
+
+      // DÉSACTIVÉ: Sync direct Firebase avec règles strictes
+      // Utilise maintenant le serveur sécurisé pour tout
+      console.log(
+        `[FIREBASE-SYNC]  ⚠️ Direct Firebase sync disabled - using secure server instead`
+      );
+      return true;
 
       const syncNFTLevel = async () => {
         try {
@@ -1643,29 +1892,10 @@ mergeInto(LibraryManager.library, {
           }
         } catch (error) {
           console.error(`[FIREBASE-SYNC]  Sync failed:`, error);
-
-          const fallbackState = {
-            hasNFT: true,
-            level: level,
-            tokenId: nftTokenId,
-            walletAddress: normalizedAddress,
-            score: 100,
-          };
-
-          console.log(`[FIREBASE-SYNC]  Using fallback state:`, fallbackState);
-
-          //
-          if (typeof unityInstance !== "undefined") {
-            unityInstance.SendMessage(
-              "ChogTanksNFTManager",
-              "OnFirebaseSyncCompleted",
-              JSON.stringify(fallbackState)
-            );
-          } else {
-            console.error(
-              "[FIREBASE-SYNC]  unityInstance is not defined in fallback"
-            );
-          }
+          console.error(
+            `[FIREBASE-SYNC]  ⚠️ NO FALLBACK - sync disabled for security`
+          );
+          // PAS DE FALLBACK - trop dangereux d'ajouter des points arbitraires
         }
       };
 

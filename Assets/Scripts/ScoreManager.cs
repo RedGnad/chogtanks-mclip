@@ -7,6 +7,7 @@ using System.Collections;
 using System.Runtime.InteropServices;
 using TMPro;
 
+[UnityEngine.Scripting.Preserve]
 public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 {
     private const float ROOM_LIFETIME = 180f; 
@@ -21,6 +22,8 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 #if UNITY_WEBGL && !UNITY_EDITOR
     [DllImport("__Internal")]
     private static extern bool SubmitScoreJS(string score, string bonus, string walletAddress, string matchId);
+    [DllImport("__Internal")]
+    private static extern bool RequestMatchTokenJS();
 #endif
     
     private Dictionary<int, int> playerScores = new Dictionary<int, int>(); 
@@ -135,6 +138,10 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             Debug.Log($"[SM] StartMatch(client) cycle={matchCycle} provisional matchStartTime={matchStartTime:F1}");
 #endif
         }
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+        try { RequestMatchTokenJS(); } catch {}
+#endif
     }
     
     private IEnumerator MatchTimer()
@@ -651,6 +658,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     }
     
     // Callbacks du serveur sécurisé
+    [UnityEngine.Scripting.Preserve]
     public void OnScoreSubmitted(string newScore)
     {
         if (int.TryParse(newScore, out int score))
@@ -660,12 +668,14 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         }
     }
     
+    [UnityEngine.Scripting.Preserve]
     public void OnScoreRejected(string error)
     {
         Debug.LogWarning($"[SCOREMANAGER] ⚠️ Score rejeté par le serveur: {error}");
         // Optionnel: afficher un message à l'utilisateur
     }
     
+    [UnityEngine.Scripting.Preserve]
     public void OnScoreFailed(string error)
     {
         Debug.LogError($"[SCOREMANAGER] ❌ Échec soumission score: {error}");
@@ -797,6 +807,15 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             int winnerActorNumber = (int)data[0];
             string winnerName = (string)data[1];
             int highestScore = (int)data[2];
+            
+            // Aligne le cache local avec le score final (+1)
+            playerScores[winnerActorNumber] = highestScore;
+            
+            // Mise à jour visuelle immédiate de la player list
+            if (LobbyUI.Instance != null)
+            {
+                LobbyUI.Instance.UpdatePlayerList();
+            }
             
             ShowWinnerAndSubmitScores(winnerActorNumber, winnerName, highestScore);
         }

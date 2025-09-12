@@ -1,9 +1,11 @@
 const express = require('express');
 const { ethers } = require('ethers');
+const crypto = require('crypto');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
+app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '10mb' })); // Limite de taille pour éviter les attaques
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -108,6 +110,34 @@ if (!admin.apps.length) {
 }
 
 const port = process.env.PORT || 3001;
+
+// Match tokens en mémoire: token -> { uid, expMs, used }
+const matchTokens = new Map();
+const MATCH_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes (matches last ~3-4 min)
+
+// Helper: vérifie ID token Firebase, renvoie uid ou null
+async function verifyFirebaseIdTokenFromRequest(req) {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) return null;
+    try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        return decoded && decoded.uid ? decoded.uid : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// Démarrage de match: génère un matchToken court-vivant lié au uid
+app.post('/api/match/start', async (req, res) => {
+    const uid = await verifyFirebaseIdTokenFromRequest(req);
+    if (!uid) return res.status(401).json({ error: 'Unauthorized' });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expMs = Date.now() + MATCH_TOKEN_TTL_MS;
+    matchTokens.set(token, { uid, expMs, used: false });
+    return res.json({ matchToken: token, expiresInMs: MATCH_TOKEN_TTL_MS });
+});
 
 // Démarrage en mode dégradé si la clé n'est pas présente: ne pas quitter, garder /health up
 let gameWallet = null;
@@ -657,13 +687,73 @@ app.post('/api/monad-games-id/batch-update', requireWallet, async (req, res) => 
     }
 });
 
+// ===== FIREBASE SCORE READ ENDPOINT =====
+// Endpoint sécurisé pour lire les scores Firebase
+app.get('/api/firebase/get-score/:walletAddress', requireWallet, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { walletAddress } = req.params;
+    console.log(`[FIREBASE-READ] 📖 Score read request for ${walletAddress}`);
+    
+    // Validation de l'adresse wallet
+    if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+      return res.status(400).json({ error: 'Invalid wallet address format' });
+    }
+    
+    const normalizedAddress = walletAddress.toLowerCase();
+    
+    // Vérifier si Firebase Admin est disponible
+    if (!admin.apps.length) {
+      console.error('[FIREBASE-READ] ❌ Firebase Admin not initialized');
+      return res.status(503).json({ error: 'Score read service unavailable' });
+    }
+    
+    // Lecture sécurisée depuis Firebase via Admin SDK
+    const db = admin.firestore();
+    const docRef = db.collection('WalletScores').doc(normalizedAddress);
+    const doc = await docRef.get();
+    
+    if (!doc.exists) {
+      console.log(`[FIREBASE-READ] 📝 New player: ${normalizedAddress}`);
+      res.json({ 
+        walletAddress: normalizedAddress, 
+        score: 0, 
+        nftLevel: 0,
+        isNew: true 
+      });
+    } else {
+      const data = doc.data();
+      const score = Number(data.score || 0);
+      const nftLevel = Number(data.nftLevel || 0);
+      
+      console.log(`[FIREBASE-READ] ✅ Score read: ${score} for ${normalizedAddress}`);
+      res.json({ 
+        walletAddress: normalizedAddress, 
+        score: score, 
+        nftLevel: nftLevel,
+        isNew: false 
+      });
+    }
+    
+    const duration = Date.now() - startTime;
+    console.log(`[FIREBASE-READ] 🎉 Score read completed in ${duration}ms`);
+    
+  } catch (error) {
+    console.error('[FIREBASE-READ] ❌ Error:', error);
+    res.status(500).json({ error: "Failed to read score", details: error.message });
+  }
+});
+
 // ===== FIREBASE SCORE VALIDATION ENDPOINT =====
 // Endpoint sécurisé pour valider et soumettre les scores Firebase
 app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
     const startTime = Date.now();
     
     try {
-        const { walletAddress, score, bonus, matchId, playerSignature } = req.body;
+        const { walletAddress, score, bonus, matchId, matchToken } = req.body;
+        // Vérification Firebase ID token (Authorization: Bearer ...)
+        const uid = await verifyFirebaseIdTokenFromRequest(req);
+        if (!uid) return res.status(401).json({ error: 'Invalid or missing Firebase ID token' });
         
         console.log(`[FIREBASE-SCORE] 📊 Score submission request from ${walletAddress}`);
         console.log(`[FIREBASE-SCORE] Score: ${score}, Bonus: ${bonus}, Match: ${matchId}`);
@@ -685,16 +775,35 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
         const normalizedAddress = walletAddress.toLowerCase();
         const totalScore = parseInt(score) + (parseInt(bonus) || 0);
         
-        // Validation du score (anti-triche)
+        // Validation du score (anti-triche de base)
         if (totalScore < 0 || totalScore > 1000) {
             console.warn(`[FIREBASE-SCORE] ⚠️ Score suspect: ${totalScore} from ${normalizedAddress}`);
             return res.status(403).json({ 
                 error: 'Score out of reasonable range (0-1000)' 
             });
         }
+
+        // Vérification matchToken (empêche soumissions hors gameplay)
+        if (!matchToken) {
+            return res.status(401).json({ error: 'Missing matchToken' });
+        }
+        const mt = matchTokens.get(matchToken);
+        if (!mt) {
+            return res.status(401).json({ error: 'Invalid matchToken' });
+        }
+        if (mt.uid !== uid) {
+            return res.status(401).json({ error: 'MatchToken uid mismatch' });
+        }
+        if (mt.used || Date.now() > mt.expMs) {
+            matchTokens.delete(matchToken);
+            return res.status(401).json({ error: 'Expired or used matchToken' });
+        }
+        // Marquer comme utilisé (un submit par matchToken)
+        mt.used = true;
+        matchTokens.set(matchToken, mt);
         
-        // Rate limiting spécifique aux scores
-        const scoreKey = `score_${normalizedAddress}`;
+        // Rate limiting spécifique aux scores (par uid, pas par wallet)
+        const scoreKey = `score_uid_${uid}`;
         const now = Date.now();
         
         if (!scoreRateLimit.has(scoreKey)) {
@@ -713,15 +822,15 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
             }
         }
         
-        // Vérifier l'intervalle minimum entre soumissions
-        const lastSubmission = lastScoreSubmission.get(normalizedAddress);
+        // Vérifier l'intervalle minimum entre soumissions (par uid)
+        const lastSubmission = lastScoreSubmission.get(uid);
         if (lastSubmission && (now - lastSubmission) < 5000) { // 5 secondes minimum
             return res.status(429).json({ 
                 error: 'Please wait before submitting another score' 
             });
         }
         
-        lastScoreSubmission.set(normalizedAddress, now);
+        lastScoreSubmission.set(uid, now);
         
         // Vérifier si Firebase Admin est disponible
         if (!admin.apps.length) {
@@ -731,11 +840,17 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
             });
         }
         
-        // Écriture sécurisée dans Firebase via Admin SDK
+        // Écriture sécurisée dans Firebase via Admin SDK avec idempotence uid+matchId
         const db = admin.firestore();
         const docRef = db.collection('WalletScores').doc(normalizedAddress);
+        const markerId = `${uid}:${matchId}`;
+        const markerRef = db.collection('ProcessedSubmissions').doc(markerId);
         
         await db.runTransaction(async (transaction) => {
+            const marker = await transaction.get(markerRef);
+            if (marker.exists) {
+                throw Object.assign(new Error('Duplicate submission'), { code: 409 });
+            }
             const doc = await transaction.get(docRef);
             
             if (!doc.exists) {
@@ -744,6 +859,7 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
                     score: totalScore,
                     nftLevel: 0,
                     walletAddress: normalizedAddress,
+                    uid: uid,
                     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     matchId: matchId,
@@ -768,6 +884,7 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
                 transaction.update(docRef, {
                     score: newScore,
                     walletAddress: normalizedAddress,
+                    uid: uid,
                     lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                     matchId: matchId,
                     validatedBy: 'server',
@@ -783,6 +900,13 @@ app.post('/api/firebase/submit-score', requireWallet, async (req, res) => {
                 
                 console.log(`[FIREBASE-SCORE] ✅ Score mis à jour: ${currentScore} + ${totalScore} = ${newScore}`);
             }
+            transaction.set(markerRef, {
+                uid: uid,
+                walletAddress: normalizedAddress,
+                matchId: matchId,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                scoreSubmitted: totalScore
+            });
         });
         
         const duration = Date.now() - startTime;
