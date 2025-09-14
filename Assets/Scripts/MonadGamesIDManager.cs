@@ -4,6 +4,7 @@ using TMPro;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Photon.Pun;
+using ExitGames.Client.Photon;
 
 namespace Sample
 {
@@ -467,6 +468,19 @@ namespace Sample
             
             // SIMPLE: Mettre à jour PhotonNetwork.NickName directement
             PhotonNetwork.NickName = username;
+            try
+            {
+                if (PhotonNetwork.LocalPlayer != null)
+                {
+                    var props = new Hashtable { { "privyUsername", username } };
+                    PhotonNetwork.LocalPlayer.SetCustomProperties(props);
+                    Debug.Log($"[MONAD-PLAYER-NAME] Set CustomProperties privyUsername='{username}'");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[MONAD-PLAYER-NAME] Failed to set privyUsername property: {e.Message}");
+            }
             
             // Forcer la mise à jour du mainScreenPlayerNameText via LobbyUI
             var lobbyUI = FindObjectOfType<LobbyUI>();

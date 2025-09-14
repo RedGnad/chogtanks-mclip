@@ -155,6 +155,8 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     private int pendingEvolutionCost = 0; 
     // Track the last level we synced to Photon to avoid redundant network updates
     private int lastSyncedPhotonLevel = int.MinValue;
+    
+    private string _firebaseIdToken = string.Empty;
 
 #if UNITY_WEBGL && !UNITY_EDITOR
     [DllImport("__Internal")]
@@ -198,6 +200,9 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     
     [DllImport("__Internal")]
     private static extern void RequestEvolutionSignatureJS(string walletAddress, int tokenId, int playerPoints, int targetLevel);
+    
+    [DllImport("__Internal")]
+    private static extern int GetFirebaseIdTokenJS(string gameObjectName, string callbackMethod, int forceRefresh);
 #else
     private static void GetNFTStateJS(string walletAddress) { }
     private static void CheckEvolutionEligibilityJS(string walletAddress) { }
@@ -211,6 +216,7 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     private static void CheckEvolutionEligibilityOnlyJS(string walletAddress, int pointsRequired, int tokenId, int targetLevel) { }
     private static void ConsumePointsAfterSuccessJS(string walletAddress, int pointsToConsume, int tokenId, int newLevel) { }
     private static void RequestEvolutionSignatureJS(string walletAddress, int tokenId, int playerPoints, int targetLevel) { }
+    private static int GetFirebaseIdTokenJS(string gameObjectName, string callbackMethod, int forceRefresh) { return 0; }
 #endif
 
     void Start()
@@ -747,17 +753,8 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             
             if (balance == 0)
             {
-                Debug.Log($"[BLOCKCHAIN-V2] No NFTs found, sending empty state");
-                var emptyState = new NFTStateData
-                {
-                    hasNFT = false,
-                    level = 0,
-                    tokenId = 0,
-                    walletAddress = normalizedWallet,
-                    score = 0,
-                    nftCount = 0
-                };
-                OnNFTStateLoaded(JsonUtility.ToJson(emptyState));
+                Debug.Log($"[BLOCKCHAIN-V2] No NFTs found, fetching score from Firebase");
+                LoadNFTStateFromFirebase();
                 return;
             }
             
@@ -1141,7 +1138,8 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
                 }
                 else if (level == 0)
                 {
-                    scoreProgressText.text = "XP: 0/0";
+                    // Afficher l'XP même sans NFT
+                    scoreProgressText.text = $"XP: {currentScore}";
                 }
                 else
                 {
@@ -1564,6 +1562,13 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             
             UpdateStatusUI($"NFT evolved to Level {newLevel}! TX: {displayHash}");
             UpdateLevelUI(newLevel);
+
+            // Rafraîchir l'UI NFT une seule fois après l'évolution (évite le double clignotement)
+            var nftPanel = FindObjectOfType<NFTDisplayPanel>(true);
+            if (nftPanel != null)
+            {
+                nftPanel.RefreshAfterEvolution();
+            }
         }
         catch (Exception ex)
         {
@@ -2771,11 +2776,35 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
         Debug.Log($"[MONAD-GAMES] 📤 JSON envoyé: {jsonData}");
         byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(jsonData);
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // Demander un idToken Firebase (si connecté) de façon non bloquante
+        try
+        {
+            _firebaseIdToken = string.Empty;
+            GetFirebaseIdTokenJS(gameObject.name, nameof(OnFirebaseIdTokenReceived), 0);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[MONAD-GAMES] Impossible de demander l'idToken Firebase: {ex.Message}");
+        }
+        // Attendre brièvement la réponse (max 1s)
+        float waited = 0f;
+        while (string.IsNullOrEmpty(_firebaseIdToken) && waited < 1f)
+        {
+            yield return new WaitForSeconds(0.1f);
+            waited += 0.1f;
+        }
+#endif
+
         using (UnityWebRequest request = new UnityWebRequest("https://chogtanks-nft-servers.onrender.com/api/monad-games-id/update-player", "POST"))
         {
             request.uploadHandler = new UploadHandlerRaw(bodyRaw);
             request.downloadHandler = new DownloadHandlerBuffer();
             request.SetRequestHeader("Content-Type", "application/json");
+            if (!string.IsNullOrEmpty(_firebaseIdToken))
+            {
+                request.SetRequestHeader("Authorization", $"Bearer {_firebaseIdToken}");
+            }
             request.timeout = 30; 
 
             yield return request.SendWebRequest();
@@ -2788,7 +2817,21 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
                 Debug.Log($"[MONAD-GAMES] ✅ Score soumis avec succès!");
                 Debug.Log($"[MONAD-GAMES] Réponse: {request.downloadHandler.text}");
                 
-                ShowMonadFeedback($"+ {scoreAmount} Monad ID points");
+                // Vérifier que la réponse confirme vraiment la soumission au contrat Monad ID
+                string responseText = request.downloadHandler.text;
+                bool isQueued = responseText.Contains("\"queued\":true");
+                bool hasTransactionHash = responseText.Contains("\"transactionHash\":");
+                bool hasSuccessMessage = responseText.Contains("\"message\":\"Score submitted to Monad Games ID contract\"");
+                
+                if (isQueued || hasTransactionHash || hasSuccessMessage)
+                {
+                    ShowMonadFeedback($"+ {scoreAmount} Monad ID points");
+                }
+                else
+                {
+                    Debug.LogWarning($"[MONAD-GAMES] ⚠️ Réponse serveur sans confirmation de soumission au contrat Monad ID");
+                    ShowMonadFeedback(" ");
+                }
             }
             else
             {
@@ -2828,6 +2871,20 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             {
                 audioSource.PlayOneShot(monadSuccessSound);
             }
+        }
+    }
+
+    // Callback depuis JS: reçoit l'idToken Firebase (ou string vide)
+    public void OnFirebaseIdTokenReceived(string token)
+    {
+        _firebaseIdToken = token ?? string.Empty;
+        if (string.IsNullOrEmpty(_firebaseIdToken))
+        {
+            Debug.LogWarning("[FIREBASE] idToken vide ou indisponible pour Authorization header");
+        }
+        else
+        {
+            Debug.Log("[FIREBASE] idToken reçu et prêt pour Authorization header");
         }
     }
     

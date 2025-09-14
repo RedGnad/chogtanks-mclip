@@ -6,6 +6,7 @@ using ExitGames.Client.Photon;
 using System.Collections;
 using System.Runtime.InteropServices;
 using TMPro;
+using System.Linq;
 
 [UnityEngine.Scripting.Preserve]
 public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
@@ -28,6 +29,8 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     private Dictionary<int, int> playerScores = new Dictionary<int, int>(); 
     private Dictionary<string, string> playerWallets = new Dictionary<string, string>();
+    private Dictionary<string, string> playerPrivyUsernames = new Dictionary<string, string>();
+    private bool privyUsernamePropagated = false;
     private float matchStartTime;
     private bool matchEnded = false;
     private static int matchCycle = 0; // compteur de cycles (chaque JoinRoom -> StartMatch)
@@ -72,6 +75,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     {
         playerScores.Clear();
         playerWallets.Clear();
+        playerPrivyUsernames.Clear();
         matchStartTime = Time.time; 
         matchEnded = false;
         
@@ -91,17 +95,30 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 #endif
     StartMatch();
         
-        if (!string.IsNullOrEmpty(PlayerSession.WalletAddress))
+        string walletAddress = GetWalletAddress();
+        if (!string.IsNullOrEmpty(walletAddress) && walletAddress != "anonymous")
         {
-            string walletAddress = PlayerSession.WalletAddress;
             int actorNumber = PhotonNetwork.LocalPlayer.ActorNumber;
             
+            Debug.Log($"[ANTI-SELF-KILL] Envoi wallet AppKit via Event 3: ActorNumber={actorNumber}, Wallet={walletAddress}");
+            
             object[] walletData = new object[] { actorNumber.ToString(), walletAddress };
-            RaiseEventOptions options = new RaiseEventOptions { Receivers = ReceiverGroup.All };
+            RaiseEventOptions options = new RaiseEventOptions { Receivers = ReceiverGroup.All, CachingOption = EventCaching.AddToRoomCache };
             PhotonNetwork.RaiseEvent(3, walletData, options, SendOptions.SendReliable);
             
             playerWallets[actorNumber.ToString()] = walletAddress;
+
+            var props = new ExitGames.Client.Photon.Hashtable { { "wallet", walletAddress } };
+            PhotonNetwork.LocalPlayer.SetCustomProperties(props);
         }
+        else
+        {
+            Debug.LogWarning($"[ANTI-SELF-KILL] Adresse AppKit non trouvée: {walletAddress}");
+        }
+
+        // Propager le username Privy réel via CustomProperties (source: MonadGamesIDManager / PlayerPrefs)
+        TryPropagatePrivyUsername();
+        StartCoroutine(DelayPropagatePrivyUsername());
     }
     
     private void StartMatch()
@@ -220,7 +237,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             if (!matchEnded && PhotonNetwork.IsMasterClient && PhotonNetwork.InRoom && Time.time > nextSyncTime)
             {
                 SyncMatchTime(timeLeft);
-                nextSyncTime = Time.time + 5f; 
+                nextSyncTime = Time.time + 10f;
             }
             
             yield return null;
@@ -237,6 +254,32 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         AddScore(killerActorNumber, 1);
     }
     
+    public void AddKill(int killerActorNumber, int victimActorNumber)
+    {
+        // Vérification anti-self-kill avec logs de debug
+        string killerWallet = GetPlayerWallet(killerActorNumber);
+        string victimWallet = GetPlayerWallet(victimActorNumber);
+        string killerPrivy = GetPlayerPrivyUsername(killerActorNumber);
+        string victimPrivy = GetPlayerPrivyUsername(victimActorNumber);
+        
+        Debug.Log($"[ANTI-SELF-KILL] Killer {killerActorNumber} (wallet: {killerWallet}, privy: {killerPrivy}) vs Victim {victimActorNumber} (wallet: {victimWallet}, privy: {victimPrivy})");
+        
+        if (SameWalletIdentity(killerActorNumber, victimActorNumber))
+        {
+            Debug.Log($"[ANTI-SELF-KILL] BLOQUÉ: même wallet détecté!");
+            return; // Pas de points pour self-kill
+        }
+        
+        if (SamePrivyUsernameIdentity(killerActorNumber, victimActorNumber))
+        {
+            Debug.Log($"[ANTI-SELF-KILL] BLOQUÉ: même username Privy détecté!");
+            return; // Pas de points si même username Privy (global wallet)
+        }
+        
+        Debug.Log($"[ANTI-SELF-KILL] Wallets différents, kill autorisé");
+        AddScore(killerActorNumber, 1);
+    }
+    
     public void AddScore(int playerActorNumber, int points)
     {
         if (matchEnded) 
@@ -244,10 +287,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             return;
         }
         
-    #if UNITY_EDITOR || DEVELOPMENT_BUILD
-    Debug.Log($"[SCOREMANAGER] Adding {points} points to player {playerActorNumber}");
-    #endif
-
+    
         int scoreBefore = playerScores.ContainsKey(playerActorNumber) ? playerScores[playerActorNumber] : 0;
         if (playerScores.ContainsKey(playerActorNumber))
         {
@@ -262,7 +302,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         
         RaiseEventOptions options = new RaiseEventOptions { Receivers = ReceiverGroup.All };
         object[] content = new object[] { playerActorNumber, playerScores[playerActorNumber] };
-        PhotonNetwork.RaiseEvent(SCORE_UPDATE_EVENT, content, options, SendOptions.SendReliable);
+        PhotonNetwork.RaiseEvent(SCORE_UPDATE_EVENT, content, options, SendOptions.SendUnreliable); // Optimisé pour mobile
 
         
         if (PhotonNetwork.IsMasterClient)
@@ -274,10 +314,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         {
             LobbyUI.Instance.UpdatePlayerList();
         }
-        else
-        {
-            Debug.LogWarning("[SCOREMANAGER] LobbyUI.Instance is null!");
-        }
+        // LobbyUI null check supprimé pour optimisation mobile
     }
     
     private void HandleScoreUpdate(int actorNumber, int score)
@@ -298,7 +335,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
         if (killerActorNumber > 0 && killerActorNumber != victimActorNumber)
         {
-            AddKill(killerActorNumber);
+            AddKill(killerActorNumber, victimActorNumber);
 
             string killerName = GetPlayerName(killerActorNumber);
             string victimName = GetPlayerName(victimActorNumber);
@@ -336,6 +373,146 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
                 return string.IsNullOrEmpty(player.NickName) ? $"Player {actorNumber}" : player.NickName;
         }
         return $"Player {actorNumber}";
+    }
+
+    private bool SameWalletIdentity(int actorNumber1, int actorNumber2)
+    {
+        string wallet1 = GetPlayerWallet(actorNumber1);
+        string wallet2 = GetPlayerWallet(actorNumber2);
+        
+        if (string.IsNullOrEmpty(wallet1) || string.IsNullOrEmpty(wallet2))
+            return false; // Si pas de wallet, on considère comme différent
+        
+        string n1 = NormalizeEthereumAddress(wallet1);
+        string n2 = NormalizeEthereumAddress(wallet2);
+        return !string.IsNullOrEmpty(n1) && n1 == n2;
+    }
+
+    private static string NormalizeEthereumAddress(string address)
+    {
+        if (string.IsNullOrEmpty(address)) return string.Empty;
+        string a = address.Trim();
+        if (a.StartsWith("0x") || a.StartsWith("0X"))
+        {
+            a = a.Substring(2);
+        }
+        // Doit être 40 hex
+        if (a.Length != 40) return string.Empty;
+        for (int i = 0; i < a.Length; i++)
+        {
+            char c = a[i];
+            bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!isHex) return string.Empty;
+        }
+        // Normalisation bas-de-casse (comparaison case-insensitive). EIP-55 non requis pour égalité.
+        return "0x" + a.ToLowerInvariant();
+    }
+
+    private bool SamePrivyUsernameIdentity(int actorNumber1, int actorNumber2)
+    {
+        string u1 = GetPlayerPrivyUsername(actorNumber1);
+        string u2 = GetPlayerPrivyUsername(actorNumber2);
+        if (string.IsNullOrEmpty(u1) || string.IsNullOrEmpty(u2)) return false;
+        string n1 = u1.Trim().ToLowerInvariant();
+        string n2 = u2.Trim().ToLowerInvariant();
+        // Ignore les valeurs génériques vides après trim
+        if (n1.Length == 0 || n2.Length == 0) return false;
+        return n1 == n2;
+    }
+
+    private string GetPlayerPrivyUsername(int actorNumber)
+    {
+        // D'abord dans le cache local alimenté par CustomProperties
+        if (playerPrivyUsernames.ContainsKey(actorNumber.ToString()))
+        {
+            return playerPrivyUsernames[actorNumber.ToString()];
+        }
+        // Sinon, lire directement les CustomProperties du joueur
+        foreach (var player in PhotonNetwork.PlayerList)
+        {
+            if (player.ActorNumber == actorNumber)
+            {
+                if (player.CustomProperties != null && player.CustomProperties.ContainsKey("privyUsername"))
+                {
+                    var uname = player.CustomProperties["privyUsername"] as string;
+                    if (!string.IsNullOrEmpty(uname))
+                    {
+                        playerPrivyUsernames[actorNumber.ToString()] = uname;
+                        return uname;
+                    }
+                }
+                // Fallback: utiliser le Photon NickName si disponible (dans ce projet, il est renseigné par MonadGamesIDManager)
+                if (!string.IsNullOrEmpty(player.NickName))
+                {
+                    return player.NickName;
+                }
+                break;
+            }
+        }
+        return string.Empty;
+    }
+
+    private string GetLocalPrivyUsername()
+    {
+        try
+        {
+            // Tenter via réflexion sans référence de type directe (namespace: Sample)
+            var managerType = System.Type.GetType("Sample.MonadGamesIDManager, Assembly-CSharp")
+                              ?? System.Type.GetType("Sample.MonadGamesIDManager");
+            if (managerType != null)
+            {
+                var mgrObj = UnityEngine.Object.FindObjectOfType(managerType);
+                if (mgrObj != null)
+                {
+                    var method = managerType.GetMethod("GetCurrentUsername", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (method != null)
+                    {
+                        var result = method.Invoke(mgrObj, null) as string;
+                        if (!string.IsNullOrEmpty(result)) return result;
+                    }
+                }
+            }
+        }
+        catch { }
+        // Fallbacks persistés
+        string u1 = PlayerPrefs.GetString("MonadGamesID_Username", "");
+        if (!string.IsNullOrEmpty(u1)) return u1;
+        string u2 = PlayerPrefs.GetString("monadGamesUsername", "");
+        return u2;
+    }
+
+    private string GetPlayerWallet(int actorNumber)
+    {
+        Debug.Log($"[ANTI-SELF-KILL] GetPlayerWallet({actorNumber}) appelé");
+        Debug.Log($"[ANTI-SELF-KILL] playerWallets contient: {string.Join(", ", playerWallets.Select(kv => $"{kv.Key}={kv.Value}"))}");
+        
+        // D'abord chercher dans playerWallets (envoyé via event 3)
+        if (playerWallets.ContainsKey(actorNumber.ToString()))
+        {
+            string wallet = playerWallets[actorNumber.ToString()];
+            Debug.Log($"[ANTI-SELF-KILL] Wallet trouvé dans playerWallets: {wallet}");
+            return wallet;
+        }
+        
+        Debug.Log($"[ANTI-SELF-KILL] Wallet non trouvé dans playerWallets, cherchant dans CustomProperties");
+        
+        // Sinon chercher dans les CustomProperties du joueur
+        foreach (var player in PhotonNetwork.PlayerList)
+        {
+            if (player.ActorNumber == actorNumber)
+            {
+                if (player.CustomProperties.ContainsKey("wallet"))
+                {
+                    string wallet = player.CustomProperties["wallet"] as string;
+                    Debug.Log($"[ANTI-SELF-KILL] Wallet trouvé dans CustomProperties: {wallet}");
+                    return wallet;
+                }
+                break;
+            }
+        }
+        
+        Debug.Log($"[ANTI-SELF-KILL] Aucun wallet trouvé pour ActorNumber {actorNumber}");
+        return "";
     }
 
     private IEnumerator HideKillFeedAfterDelay(float delay)
@@ -650,10 +827,9 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         }
         
 #if UNITY_WEBGL && !UNITY_EDITOR
-        Debug.Log($"[SCOREMANAGER] 🚀 Soumission sécurisée: {score} (+{bonus}) pour {walletAddress}");
         SubmitScoreJS(score.ToString(), bonus.ToString(), walletAddress, GetCurrentMatchId());
 #else
-        Debug.Log($"[SCOREMANAGER] Score simulé (Editor): {score} (+{bonus}) pour {walletAddress}");
+        // Score simulé en mode Editor
 #endif
     }
     
@@ -663,7 +839,7 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     {
         if (int.TryParse(newScore, out int score))
         {
-            Debug.Log($"[SCOREMANAGER] ✅ Score confirmé par le serveur: {score}");
+            // Score confirmé par le serveur
             UpdateScoreDisplay(score);
         }
     }
@@ -693,54 +869,36 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     
     private string GetWalletAddress()
     {
-        string walletAddress = "";
+        // Utiliser l'adresse AppKit stockée dans PlayerPrefs (comme dans ChogTanksNFTManager)
+        string appKitAddress = PlayerPrefs.GetString("walletAddress", "");
+        if (!string.IsNullOrEmpty(appKitAddress))
+        {
+            Debug.Log($"[ANTI-SELF-KILL] Adresse AppKit depuis PlayerPrefs: {appKitAddress}");
+            return appKitAddress;
+        }
         
+        // Fallback: récupérer directement depuis AppKit si pas dans PlayerPrefs
         try
         {
             if (Reown.AppKit.Unity.AppKit.IsInitialized && 
                 Reown.AppKit.Unity.AppKit.IsAccountConnected && 
                 Reown.AppKit.Unity.AppKit.Account != null)
             {
-                string appKitAddress = Reown.AppKit.Unity.AppKit.Account.Address;
-                if (!string.IsNullOrEmpty(appKitAddress))
+                string directAppKitAddress = Reown.AppKit.Unity.AppKit.Account.Address;
+                if (!string.IsNullOrEmpty(directAppKitAddress))
                 {
-                    walletAddress = appKitAddress;
+                    Debug.Log($"[ANTI-SELF-KILL] Adresse AppKit directe: {directAppKitAddress}");
+                    return directAppKitAddress;
                 }
             }
         }
         catch (System.Exception ex)
         {
+            Debug.LogWarning($"[ANTI-SELF-KILL] Erreur récupération AppKit: {ex.Message}");
         }
         
-        if (string.IsNullOrEmpty(walletAddress))
-        {
-            string prefsAddress = PlayerPrefs.GetString("walletAddress", "");
-            if (!string.IsNullOrEmpty(prefsAddress))
-            {
-                walletAddress = prefsAddress;
-            }
-        }
-        
-        if (string.IsNullOrEmpty(walletAddress))
-        {
-            try
-            {
-                if (PlayerSession.IsConnected && !string.IsNullOrEmpty(PlayerSession.WalletAddress))
-                {
-                    walletAddress = PlayerSession.WalletAddress;
-                }
-            }
-            catch (System.Exception ex)
-            {
-            }
-        }
-        
-        if (string.IsNullOrEmpty(walletAddress))
-        {
-            walletAddress = "anonymous";
-        }
-        
-        return walletAddress;
+        Debug.LogWarning($"[ANTI-SELF-KILL] Aucune adresse AppKit trouvée");
+        return "anonymous";
     }
 
     private string GetCurrentMatchId()
@@ -825,7 +983,9 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             string actorIdStr = (string)data[0];
             string walletAddress = (string)data[1];
             
+            Debug.Log($"[ANTI-SELF-KILL] Event 3 reçu: ActorNumber={actorIdStr}, Wallet={walletAddress}");
             playerWallets[actorIdStr] = walletAddress;
+            Debug.Log($"[ANTI-SELF-KILL] playerWallets mis à jour. Contenu: {string.Join(", ", playerWallets.Select(kv => $"{kv.Key}={kv.Value}"))}");
         }
         else if (eventCode == 4) 
         {
@@ -881,6 +1041,54 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
             
             float timeLeft = ROOM_LIFETIME - (Time.time - matchStartTime);
             SyncMatchTime(timeLeft);
+        }
+    }
+
+    public override void OnPlayerPropertiesUpdate(Player targetPlayer, ExitGames.Client.Photon.Hashtable changedProps)
+    {
+        if (changedProps == null) return;
+        if (changedProps.ContainsKey("wallet"))
+        {
+            string wallet = changedProps["wallet"] as string;
+            if (!string.IsNullOrEmpty(wallet))
+            {
+                playerWallets[targetPlayer.ActorNumber.ToString()] = wallet;
+                Debug.Log($"[ANTI-SELF-KILL] Properties update: ActorNumber={targetPlayer.ActorNumber}, Wallet={wallet}");
+            }
+        }
+        if (changedProps.ContainsKey("privyUsername"))
+        {
+            string uname = changedProps["privyUsername"] as string;
+            if (!string.IsNullOrEmpty(uname))
+            {
+                playerPrivyUsernames[targetPlayer.ActorNumber.ToString()] = uname;
+                Debug.Log($"[ANTI-SELF-KILL] Properties update: ActorNumber={targetPlayer.ActorNumber}, PrivyUsername={uname}");
+            }
+        }
+    }
+
+    private void TryPropagatePrivyUsername()
+    {
+        if (privyUsernamePropagated) return;
+        string privyUsername = GetLocalPrivyUsername();
+        if (!string.IsNullOrEmpty(privyUsername) && PhotonNetwork.LocalPlayer != null)
+        {
+            int actorNumber = PhotonNetwork.LocalPlayer.ActorNumber;
+            playerPrivyUsernames[actorNumber.ToString()] = privyUsername;
+            var props2 = new ExitGames.Client.Photon.Hashtable { { "privyUsername", privyUsername } };
+            PhotonNetwork.LocalPlayer.SetCustomProperties(props2);
+            Debug.Log($"[ANTI-SELF-KILL] Propagation privyUsername via CustomProperties: ActorNumber={actorNumber}, Username={privyUsername}");
+            privyUsernamePropagated = true;
+        }
+    }
+
+    private IEnumerator DelayPropagatePrivyUsername()
+    {
+        // Retente quelques fois (ex: si MonadGamesIDManager initialise après l'entrée dans la room)
+        for (int i = 0; i < 5 && !privyUsernamePropagated; i++)
+        {
+            yield return new WaitForSeconds(1f);
+            TryPropagatePrivyUsername();
         }
     }
     

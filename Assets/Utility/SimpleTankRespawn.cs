@@ -193,7 +193,8 @@ public class SimpleTankRespawn : MonoBehaviourPun, IMatchmakingCallbacks
         {
             if (ScoreManager.Instance != null)
             {
-                ScoreManager.Instance.AddKill(killerActorNumber);
+                // Utiliser la surcharge avec vérification anti-self-kill
+                ScoreManager.Instance.AddKill(killerActorNumber, photonView.OwnerActorNr);
             }
             else
             {

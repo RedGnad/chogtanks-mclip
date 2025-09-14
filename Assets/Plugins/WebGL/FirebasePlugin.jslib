@@ -735,21 +735,36 @@ mergeInto(LibraryManager.library, {
                       `[EVOL] Calling signature server for evolution authorization...`
                     );
 
-                    fetch(
-                      "https://chogtanks-nft-server.fly.dev/api/evolve-authorization",
-                      {
-                        method: "POST",
-                        headers: {
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                          walletAddress: normalizedAddress,
-                          tokenId: foundTokenId,
-                          playerPoints: Number(currentScore),
-                          targetLevel: onChainLevel + 1,
-                        }),
-                      }
-                    )
+                    (async () => {
+                      let headers = { "Content-Type": "application/json" };
+                      try {
+                        if (
+                          typeof firebase !== "undefined" &&
+                          firebase.auth &&
+                          firebase.auth().currentUser
+                        ) {
+                          const token = await firebase
+                            .auth()
+                            .currentUser.getIdToken();
+                          if (token)
+                            headers["Authorization"] = "Bearer " + token;
+                        }
+                      } catch (_) {}
+
+                      return fetch(
+                        "https://chogtanks-nft-servers.onrender.com/api/evolve-authorization",
+                        {
+                          method: "POST",
+                          headers,
+                          body: JSON.stringify({
+                            playerAddress: normalizedAddress,
+                            tokenId: foundTokenId,
+                            playerPoints: Number(currentScore),
+                            targetLevel: onChainLevel + 1,
+                          }),
+                        }
+                      );
+                    })()
                       .then((response) => response.json())
                       .then((data) => {
                         console.log(`[EVOL] Server response:`, data);
@@ -795,24 +810,13 @@ mergeInto(LibraryManager.library, {
                       .catch((error) => {
                         console.error(`[EVOL] Server error:`, error);
 
-                        console.log(
-                          `[EVOL] Falling back to mock signature for development`
-                        );
-                        const mockAuth = {
-                          authorized: true,
-                          walletAddress: normalizedAddress,
-                          tokenId: foundTokenId || 0,
-                          currentPoints: Number(currentScore) || 0,
-                          evolutionCost: Number(requiredScore) || 0,
-                          targetLevel: onChainLevel + 1,
-                          nonce: Date.now(),
-                          signature: "0x1234567890abcdef",
-                        };
-
                         unityInstance.SendMessage(
                           "ChogTanksNFTManager",
                           "OnEvolutionAuthorized",
-                          JSON.stringify(mockAuth)
+                          JSON.stringify({
+                            authorized: false,
+                            error: "Server error",
+                          })
                         );
                       });
                   } else {
@@ -1703,16 +1707,30 @@ mergeInto(LibraryManager.library, {
 
       console.log(`[DIRECT-MINT] Calling signature server...`);
 
-      fetch("https://chogtanks-nft-server.fly.dev/api/mint-authorization", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          walletAddress: address,
-          playerPoints: 0, // Mint requires 0 points
-        }),
-      })
+      (async () => {
+        let headers = { "Content-Type": "application/json" };
+        try {
+          if (
+            typeof firebase !== "undefined" &&
+            firebase.auth &&
+            firebase.auth().currentUser
+          ) {
+            const token = await firebase.auth().currentUser.getIdToken();
+            if (token) headers["Authorization"] = "Bearer " + token;
+          }
+        } catch (_) {}
+        return fetch(
+          "https://chogtanks-nft-servers.onrender.com/api/mint-authorization",
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              walletAddress: address,
+              playerPoints: 0, // Mint requires 0 points
+            }),
+          }
+        );
+      })()
         .then((response) => response.json())
         .then((data) => {
           console.log(`[DIRECT-MINT] Server response:`, data);
@@ -1755,23 +1773,13 @@ mergeInto(LibraryManager.library, {
         .catch((error) => {
           console.error(`[DIRECT-MINT] Server error:`, error);
 
-          console.log(
-            `[DIRECT-MINT] Falling back to mock signature for development`
-          );
-
-          const mockAuth = {
-            authorized: true,
-            walletAddress: address,
-            mintPrice: 1000000000000000,
-            nonce: Date.now(),
-            signature: "0x1234567890abcdef", // Mock signature
-          };
-
-          unityInstance.SendMessage(
-            "ChogTanksNFTManager",
-            "OnMintAuthorized",
-            JSON.stringify(mockAuth)
-          );
+          if (typeof unityInstance !== "undefined") {
+            unityInstance.SendMessage(
+              "ChogTanksNFTManager",
+              "OnMintAuthorized",
+              JSON.stringify({ authorized: false, error: "Server error" })
+            );
+          }
         });
 
       return true;
@@ -1925,17 +1933,34 @@ mergeInto(LibraryManager.library, {
     console.log(`[EVOL-DIRECT] Player points: ${playerPoints}`);
     console.log(`[EVOL-DIRECT] Target level: ${targetLevel}`);
 
-    fetch("https://chogtanks-nft-server.fly.dev/api/evolve-authorization", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        walletAddress: normalizedAddress,
-        playerPoints: playerPoints,
-        targetLevel: targetLevel,
-      }),
-    })
+    (async () => {
+      let headers = { "Content-Type": "application/json" };
+      try {
+        if (firebase && firebase.auth) {
+          const user = firebase.auth().currentUser;
+          if (user) {
+            const token = await user.getIdToken();
+            if (token) {
+              headers["Authorization"] = "Bearer " + token;
+            }
+          }
+        }
+      } catch (_) {}
+
+      return fetch(
+        "https://chogtanks-nft-servers.onrender.com/api/evolve-authorization",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            playerAddress: normalizedAddress,
+            tokenId: tokenId,
+            playerPoints: playerPoints,
+            targetLevel: targetLevel,
+          }),
+        }
+      );
+    })()
       .then((response) => response.json())
       .then((data) => {
         console.log(`[EVOL-DIRECT] Server response:`, data);
@@ -1978,40 +2003,13 @@ mergeInto(LibraryManager.library, {
       })
       .catch((error) => {
         console.error(`[EVOL-DIRECT]  Server error:`, error);
-
-        console.log(
-          `[EVOL-DIRECT] Falling back to mock signature for development`
-        );
-
-        const evolutionCosts = {
-          2: 2,
-          3: 100,
-          4: 200,
-          5: 300,
-          6: 400,
-          7: 500,
-          8: 600,
-          9: 700,
-          10: 800,
-        };
-
-        const mockAuth = {
-          authorized: true,
-          walletAddress: normalizedAddress,
-          tokenId: tokenId,
-          currentPoints: Number(playerPoints),
-          evolutionCost: evolutionCosts[targetLevel] || 0,
-          targetLevel: targetLevel,
-          nonce: Date.now(),
-          signature: "0x1234567890abcdef",
-        };
-
-        console.log(`[EVOL-DIRECT]  Using mock authorization:`, mockAuth);
-        unityInstance.SendMessage(
-          "ChogTanksNFTManager",
-          "OnEvolutionAuthorized",
-          JSON.stringify(mockAuth)
-        );
+        if (typeof unityInstance !== "undefined") {
+          unityInstance.SendMessage(
+            "ChogTanksNFTManager",
+            "OnEvolutionAuthorized",
+            JSON.stringify({ authorized: false, error: "Server error" })
+          );
+        }
       });
   },
 
@@ -2065,21 +2063,34 @@ mergeInto(LibraryManager.library, {
                   };
                   const currentLevelFromUnity = unityNFTState.level || 1;
 
-                  fetch(
-                    "https://chogtanks-nft-server.fly.dev/api/evolve-authorization",
-                    {
-                      method: "POST",
-                      headers: {
-                        "Content-Type": "application/json",
-                      },
-                      body: JSON.stringify({
-                        walletAddress: normalizedAddress,
-                        tokenId: tokenId,
-                        playerPoints: Number(currentScore),
-                        targetLevel: currentLevelFromUnity + 1,
-                      }),
-                    }
-                  )
+                  (async () => {
+                    let headers = { "Content-Type": "application/json" };
+                    try {
+                      if (firebase && firebase.auth) {
+                        const user = firebase.auth().currentUser;
+                        if (user) {
+                          const token = await user.getIdToken();
+                          if (token) {
+                            headers["Authorization"] = "Bearer " + token;
+                          }
+                        }
+                      }
+                    } catch (_) {}
+
+                    return fetch(
+                      "https://chogtanks-nft-servers.onrender.com/api/evolve-authorization",
+                      {
+                        method: "POST",
+                        headers,
+                        body: JSON.stringify({
+                          playerAddress: normalizedAddress,
+                          tokenId: tokenId,
+                          playerPoints: Number(currentScore),
+                          targetLevel: currentLevelFromUnity + 1,
+                        }),
+                      }
+                    );
+                  })()
                     .then((response) => response.json())
                     .then((authData) => {
                       console.log(
@@ -2129,31 +2140,13 @@ mergeInto(LibraryManager.library, {
                     .catch((error) => {
                       console.error(`[EVOLUTION-CHECK]  Server error:`, error);
 
-                      const unityNFTState = window.unityNFTState || {
-                        level: 1,
-                        tokenId: tokenId,
-                      };
-                      const currentLevelFromUnity = unityNFTState.level || 1;
-
-                      const mockAuth = {
-                        authorized: true,
-                        walletAddress: normalizedAddress,
-                        score: currentScore,
-                        currentLevel: currentLevelFromUnity, // Use Unity level instead of hardcoded 1
-                        requiredScore: pointsRequired,
-                        evolutionCost: pointsRequired,
-                        targetLevel: targetLevel,
-                        nonce: Date.now(),
-                        signature: "0x1234567890abcdef",
-                      };
-
-                      console.log(
-                        `[EVOLUTION-CHECK]  Using mock authorization with Unity level ${currentLevelFromUnity} for development`
-                      );
                       unityInstance.SendMessage(
                         "ChogTanksNFTManager",
                         "OnEvolutionCheckComplete",
-                        JSON.stringify(mockAuth)
+                        JSON.stringify({
+                          authorized: false,
+                          error: "Server error",
+                        })
                       );
                     });
                 } else {

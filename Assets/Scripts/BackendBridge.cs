@@ -72,6 +72,13 @@ public class BackendBridge : MonoBehaviour
         _tokenReady = true;
         _nextTokenRenewAt = Time.realtimeSinceStartup + (55f * 60f); // 55 min
         Debug.Log("[BackendBridge][AUTH] Token reçu (len=" + token.Length + ")");
+        // Rendre le token disponible aux autres appels UnityWebRequest (fallback)
+        try
+        {
+            PlayerPrefs.SetString("FirebaseAuthToken", token);
+            PlayerPrefs.Save();
+        }
+        catch {}
         AuthReady?.Invoke();
     }
 
@@ -110,6 +117,12 @@ public class BackendBridge : MonoBehaviour
 #else
         Debug.Log("[BackendBridge] (Editor stub POST) " + url + " => " + jsonPayload);
 #endif
+    }
+
+    // Expose le token si nécessaire (fallback pour UnityWebRequest)
+    public string GetIdToken()
+    {
+        return _idToken;
     }
 
     // =====================
