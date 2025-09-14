@@ -2755,21 +2755,25 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             return;
         }
 
-        StartCoroutine(SubmitToMonadGamesIDCoroutine(playerAddress, scoreAmount, transactionAmount, actionType));
+        StartCoroutine(SubmitToMonadGamesIDCoroutine(playerAddress, scoreAmount, transactionAmount, actionType, transactionHash));
     }
 
-    private System.Collections.IEnumerator SubmitToMonadGamesIDCoroutine(string playerAddress, int scoreAmount, string transactionAmount, string actionType)
+    private System.Collections.IEnumerator SubmitToMonadGamesIDCoroutine(string playerAddress, int scoreAmount, string transactionAmount, string actionType, string transactionHash)
     {
         string currentAppKitWallet = PlayerPrefs.GetString("walletAddress", "");
         
         
+        // Normaliser l'action pour le serveur ("evolution" -> "evolve")
+        string normalizedActionType = actionType == "evolution" ? "evolve" : actionType;
+
         var requestData = new MonadGamesIDRequest
         {
             playerAddress = playerAddress,
             appKitWallet = currentAppKitWallet,
             scoreAmount = scoreAmount,
             transactionAmount = transactionAmount,
-            actionType = actionType
+            actionType = normalizedActionType,
+            txHash = transactionHash
         };
 
         string jsonData = JsonUtility.ToJson(requestData);
@@ -2906,5 +2910,6 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
         public int scoreAmount;
         public string transactionAmount;
         public string actionType;
+        public string txHash;
     }
 }
