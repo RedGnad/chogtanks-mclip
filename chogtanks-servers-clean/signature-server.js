@@ -346,8 +346,9 @@ app.post('/api/firebase/submit-score', requireWallet, requireFirebaseAuth, async
 app.post('/api/mint-authorization', requireWallet, requireFirebaseAuth, async (req, res) => {
     try {
         const { playerAddress, mintCost, playerPoints } = req.body || {};
+        const pAddr = playerAddress || req.body?.walletAddress; // alias compat
 
-        if (!playerAddress) {
+        if (!pAddr) {
             return res.status(400).json({ error: "Adresse du joueur requise" });
         }
 
@@ -356,11 +357,11 @@ app.post('/api/mint-authorization', requireWallet, requireFirebaseAuth, async (r
             const nonce = Date.now();
             const message = ethers.utils.solidityKeccak256(
                 ['address', 'uint256', 'uint256', 'string'],
-                [playerAddress, ethers.BigNumber.from(playerPoints), ethers.BigNumber.from(nonce), 'MINT']
+                [pAddr, ethers.BigNumber.from(playerPoints), ethers.BigNumber.from(nonce), 'MINT']
             );
             const signature = await gameWallet.signMessage(ethers.utils.arrayify(message));
 
-            console.log(`[MINT] ✅ Autorisation (nouveau schéma) pour ${playerAddress}, points=${playerPoints}, nonce=${nonce}`);
+            console.log(`[MINT] ✅ Autorisation (nouveau schéma) pour ${pAddr}, points=${playerPoints}, nonce=${nonce}`);
             return res.json({
                 authorized: true,
                 signature,
@@ -377,11 +378,11 @@ app.post('/api/mint-authorization', requireWallet, requireFirebaseAuth, async (r
 
         const messageLegacy = ethers.utils.solidityKeccak256(
             ['address', 'uint256'],
-            [playerAddress, ethers.BigNumber.from(mintCost)]
+            [pAddr, ethers.BigNumber.from(mintCost)]
         );
         const signatureLegacy = await gameWallet.signMessage(ethers.utils.arrayify(messageLegacy));
 
-        console.log(`[MINT] ✅ Autorisation (legacy) pour ${playerAddress}, mintCost=${mintCost}`);
+        console.log(`[MINT] ✅ Autorisation (legacy) pour ${pAddr}, mintCost=${mintCost}`);
         return res.json({
             signature: signatureLegacy,
             mintCost: Number(mintCost),
@@ -419,7 +420,45 @@ app.post('/api/evolve-authorization', requireWallet, requireFirebaseAuth, async 
             return res.status(400).json({ error: "Niveau cible invalide" });
         }
 
-        const pointsForSignature = Number(playerPoints ?? requiredPoints);
+        let pointsForSignature = Number(playerPoints ?? requiredPoints);
+        if (STRICT_POINTS) {
+            if (!(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)) {
+                return res.status(503).json({ error: 'Score service unavailable for strict mode' });
+            }
+            try {
+                const admin = require('firebase-admin');
+                if (!admin.apps.length) {
+                    const serviceAccount = {
+                        type: "service_account",
+                        project_id: process.env.FIREBASE_PROJECT_ID,
+                        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+                        private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+                        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+                        client_id: process.env.FIREBASE_CLIENT_ID,
+                        auth_uri: "https://accounts.google.com/o/oauth2/auth",
+                        token_uri: "https://oauth2.googleapis.com/token",
+                        auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+                        client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${process.env.FIREBASE_CLIENT_EMAIL}`
+                    };
+                    admin.initializeApp({
+                        credential: admin.credential.cert(serviceAccount),
+                        projectId: process.env.FIREBASE_PROJECT_ID
+                    });
+                }
+                const db = admin.firestore();
+                const normalized = String(playerAddress).toLowerCase();
+                const docRef = db.collection('WalletScores').doc(normalized);
+                const doc = await docRef.get();
+                const serverScore = doc.exists ? Number(doc.data().score || 0) : 0;
+                if (serverScore < requiredPoints) {
+                    return res.status(403).json({ error: 'Insufficient server points', required: requiredPoints, available: serverScore });
+                }
+                pointsForSignature = serverScore;
+            } catch (firebaseError) {
+                console.error('[EVOLVE-AUTH][STRICT] Firebase error:', firebaseError.message || firebaseError);
+                return res.status(500).json({ error: 'Failed to validate server points' });
+            }
+        }
         const nonce = Date.now();
 
         // Doit correspondre EXACTEMENT au contrat ChogTanks.sol:
@@ -480,24 +519,81 @@ const walletBindings = loadWalletBindings();
 console.log(`[ANTI-FARMING] ${walletBindings.size} liaisons chargées depuis ${WALLET_BINDINGS_FILE}`);
 
 // =====================
+// Idempotence événements traités (anti-replay)
+// =====================
+const PROCESSED_EVENTS_FILE = path.join(__dirname, 'processed-events.json');
+function loadProcessedEvents() {
+    try {
+        if (fs.existsSync(PROCESSED_EVENTS_FILE)) {
+            const raw = fs.readFileSync(PROCESSED_EVENTS_FILE, 'utf8');
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) return new Set(arr);
+        }
+    } catch (e) {
+        console.error('[IDEMPOTENCE] Erreur lecture processed events:', e.message || e);
+    }
+    return new Set();
+}
+function saveProcessedEvents(set) {
+    try {
+        const arr = Array.from(set);
+        fs.writeFileSync(PROCESSED_EVENTS_FILE, JSON.stringify(arr, null, 2), 'utf8');
+    } catch (e) {
+        console.error('[IDEMPOTENCE] Erreur sauvegarde processed events:', e.message || e);
+    }
+}
+const processedEvents = loadProcessedEvents();
+
+// =====================
+// Débits de points (après confirmation on-chain)
+// =====================
+const POINTS_DEBIT_EVENTS_FILE = path.join(__dirname, 'points-debited-events.json');
+function loadPointsDebitedEvents() {
+    try {
+        if (fs.existsSync(POINTS_DEBIT_EVENTS_FILE)) {
+            const raw = fs.readFileSync(POINTS_DEBIT_EVENTS_FILE, 'utf8');
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) return new Set(arr);
+        }
+    } catch (e) {
+        console.error('[POINTS-DEBIT] Erreur lecture points debited events:', e.message || e);
+    }
+    return new Set();
+}
+function savePointsDebitedEvents(set) {
+    try {
+        const arr = Array.from(set);
+        fs.writeFileSync(POINTS_DEBIT_EVENTS_FILE, JSON.stringify(arr, null, 2), 'utf8');
+    } catch (e) {
+        console.error('[POINTS-DEBIT] Erreur sauvegarde points debited events:', e.message || e);
+    }
+}
+const pointsDebitedEvents = loadPointsDebitedEvents();
+
+// =====================
 // Monad Games ID - BATCH
 // =====================
 const ENABLE_MONAD_BATCH = process.env.ENABLE_MONAD_BATCH === '1';
+const STRICT_POINTS = process.env.STRICT_POINTS === '1';
 const BATCH_FLUSH_MS = Number(process.env.BATCH_FLUSH_MS || 1500); // 1.5s
 const BATCH_MAX = Number(process.env.BATCH_MAX || 100);
 const BATCH_MAX_WAIT_MS = Number(process.env.BATCH_MAX_WAIT_MS || 3000);
 
 // Queue en mémoire: agrégation par joueur
-// Structure: Map<address, { score: number, tx: number, firstAt: number }>
+// Structure: Map<address, { score: number, tx: number, debit: number, firstAt: number, eventIds: Set<string> }>
 const batchQueue = new Map();
 let isFlushing = false;
 let lastFlushAt = Date.now();
 
-function enqueuePlayerUpdate(player, scoreDelta, txDelta) {
+function enqueuePlayerUpdate(player, scoreDelta, txDelta, eventIds, debitDelta = 0) {
     const key = player.toLowerCase();
-    const prev = batchQueue.get(key) || { score: 0, tx: 0, firstAt: Date.now() };
+    const prev = batchQueue.get(key) || { score: 0, tx: 0, debit: 0, firstAt: Date.now(), eventIds: new Set() };
     prev.score = Number(prev.score) + Number(scoreDelta || 0);
     prev.tx = Number(prev.tx) + Number(txDelta || 0);
+    prev.debit = Number(prev.debit) + Number(debitDelta || 0);
+    if (Array.isArray(eventIds)) {
+        for (const id of eventIds) prev.eventIds.add(id);
+    }
     batchQueue.set(key, prev);
 }
 
@@ -551,10 +647,14 @@ async function flushBatchIfNeeded(force = false) {
             });
             console.log(`[Monad Games ID][BATCH] Confirmed in block ${receipt.blockNumber} (gasUsed=${receipt.gasUsed.toString()})`);
 
-            // Retirer du buffer les entrées confirmées
-            for (const [addr] of chunk) {
+            // Marquer les événements utilisés comme traités (idempotence) puis retirer du buffer
+            for (const [addr, agg] of chunk) {
+                if (agg.eventIds && agg.eventIds.size) {
+                    for (const id of agg.eventIds) processedEvents.add(id);
+                }
                 batchQueue.delete(addr);
             }
+            saveProcessedEvents(processedEvents);
         }
     } catch (err) {
         console.error('[Monad Games ID][BATCH] Flush error:', err.message || err);
@@ -575,10 +675,13 @@ if (ENABLE_MONAD_BATCH) {
     }, Math.min(BATCH_FLUSH_MS, 1000)).unref();
 }
 
+// Mutex pour sérialiser les tx du serveur (éviter collisions nonce)
+let serverTxMutex = false;
+
 async function getNextNonce(wallet) {
     try {
-        // Toujours récupérer le nonce le plus récent depuis la blockchain
-        const nonce = await wallet.getTransactionCount('latest');
+        // Utiliser 'pending' pour éviter les collisions de nonce
+        const nonce = await wallet.getTransactionCount('pending');
         console.log(`[NONCE] Nonce récupéré depuis blockchain: ${nonce}`);
         return nonce;
     } catch (error) {
@@ -646,15 +749,23 @@ const chogIface = new ethers.utils.Interface([
         let derivedScore = 0;
         let derivedTx = 0;
 
-        for (const log of receipt.logs || []) {
+        const eventIds = [];
+        for (let idx = 0; idx < (receipt.logs || []).length; idx++) {
+            const log = receipt.logs[idx];
             if (String(log.address).toLowerCase() !== CHOGTANKS_CONTRACT_ADDRESS) continue;
             try {
                 const parsed = chogIface.parseLog(log);
                 if (actionType === 'mint' && parsed.name === 'NFTMinted') {
                     const owner = String(parsed.args.owner).toLowerCase();
                     if (owner !== ak) continue;
+                    const evId = `${txHash}:${idx}`;
+                    if (processedEvents.has(evId)) {
+                        console.log(`[IDEMPOTENCE] Event already processed: ${evId}`);
+                        continue;
+                    }
                     derivedScore += 100; // politique: +100 par mint
                     derivedTx += 1;
+                    eventIds.push(evId);
                 }
                 if (actionType === 'evolve' && parsed.name === 'NFTEvolved') {
                     const owner = String(parsed.args.owner).toLowerCase();
@@ -664,8 +775,14 @@ const chogIface = new ethers.utils.Interface([
                     const evolutionCosts = { 2: 2, 3: 100, 4: 200, 5: 300, 6: 400, 7: 500, 8: 600, 9: 700, 10: 800 };
                     const cost = pointsConsumed > 0 ? pointsConsumed : (evolutionCosts[newLevel] || 0);
                     if (cost > 0) {
+                        const evId = `${txHash}:${idx}`;
+                        if (processedEvents.has(evId)) {
+                            console.log(`[IDEMPOTENCE] Event already processed: ${evId}`);
+                            continue;
+                        }
                         derivedScore += cost;
                         derivedTx += 1;
+                        eventIds.push(evId);
                     }
                 }
             } catch (_) {
@@ -678,7 +795,9 @@ const chogIface = new ethers.utils.Interface([
         }
 
         if (ENABLE_MONAD_BATCH) {
-            enqueuePlayerUpdate(pa, derivedScore, derivedTx);
+            // En mode strict, on prépare aussi un débit égal au score dérivé
+            const debitDelta = STRICT_POINTS ? derivedScore : 0;
+            enqueuePlayerUpdate(pa, derivedScore, derivedTx, eventIds, debitDelta);
             return res.json({ 
                 success: true, 
                 queued: true,
@@ -689,37 +808,87 @@ const chogIface = new ethers.utils.Interface([
                 verified: true
             });
         } else {
-            const wallet = new ethers.Wallet(process.env.GAME_SERVER_PRIVATE_KEY, provider);
-            const MONAD_GAMES_ID_CONTRACT = '0x4b91a6541Cab9B2256EA7E6787c0aa6BE38b39c0';
-            const contractABI = [
-                'function updatePlayerData(address player, uint256 scoreAmount, uint256 transactionAmount)'
-            ];
-            const contract = new ethers.Contract(MONAD_GAMES_ID_CONTRACT, contractABI, wallet);
+            // Sérialiser les tx du serveur pour éviter les collisions de nonce
+            while (serverTxMutex) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            serverTxMutex = true;
+            
+            try {
+                const wallet = new ethers.Wallet(process.env.GAME_SERVER_PRIVATE_KEY, provider);
+                const MONAD_GAMES_ID_CONTRACT = '0x4b91a6541Cab9B2256EA7E6787c0aa6BE38b39c0';
+                const contractABI = [
+                    'function updatePlayerData(address player, uint256 scoreAmount, uint256 transactionAmount)'
+                ];
+                const contract = new ethers.Contract(MONAD_GAMES_ID_CONTRACT, contractABI, wallet);
 
-            console.log(`[Monad Games ID] Calling updatePlayerData(${pa}, ${derivedScore}, ${derivedTx})`);
-            const nonce = await getNextNonce(wallet);
-            const tx = await contract.updatePlayerData(pa, derivedScore, derivedTx, {
-                gasLimit: 150000,
-                maxPriorityFeePerGas: ethers.utils.parseUnits('2', 'gwei'),
-                maxFeePerGas: ethers.utils.parseUnits('100', 'gwei'),
-                nonce
-            });
-            console.log(`[Monad Games ID] Transaction sent: ${tx.hash}`);
-            const r = await tx.wait();
-            console.log(`[Monad Games ID] Transaction confirmed in block ${r.blockNumber}`);
+                console.log(`[Monad Games ID] Calling updatePlayerData(${pa}, ${derivedScore}, ${derivedTx})`);
+                const nonce = await getNextNonce(wallet);
+                const tx = await contract.updatePlayerData(pa, derivedScore, derivedTx, {
+                    gasLimit: 150000,
+                    maxPriorityFeePerGas: ethers.utils.parseUnits('2', 'gwei'),
+                    maxFeePerGas: ethers.utils.parseUnits('100', 'gwei'),
+                    nonce
+                });
+                console.log(`[Monad Games ID] Transaction sent: ${tx.hash}`);
+                const r = await tx.wait();
+                console.log(`[Monad Games ID] Transaction confirmed in block ${r.blockNumber}`);
 
-            return res.json({ 
-                success: true, 
-                transactionHash: tx.hash, 
-                blockNumber: r.blockNumber, 
-                gasUsed: r.gasUsed.toString(),
-                playerAddress: pa, 
-                scoreAmount: derivedScore, 
-                transactionAmount: derivedTx, 
-                actionType,
-                verified: true,
-                message: 'Score submitted to Monad Games ID contract'
-            });
+                // Marquer immédiatement les events comme traités (single) et persister
+                for (const id of eventIds) processedEvents.add(id);
+                saveProcessedEvents(processedEvents);
+
+            // STRICT_POINTS: décrémenter les points côté serveur APRÈS confirmation on-chain
+            if (STRICT_POINTS && derivedScore > 0 && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+                try {
+                    const admin = require('firebase-admin');
+                    if (!admin.apps.length) {
+                        const serviceAccount = {
+                            type: "service_account",
+                            project_id: process.env.FIREBASE_PROJECT_ID,
+                            private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+                            private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+                            client_email: process.env.FIREBASE_CLIENT_EMAIL,
+                            client_id: process.env.FIREBASE_CLIENT_ID,
+                            auth_uri: "https://accounts.google.com/o/oauth2/auth",
+                            token_uri: "https://oauth2.googleapis.com/token",
+                            auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+                            client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${process.env.FIREBASE_CLIENT_EMAIL}`
+                        };
+                        admin.initializeApp({
+                            credential: admin.credential.cert(serviceAccount),
+                            projectId: process.env.FIREBASE_PROJECT_ID
+                        });
+                    }
+                    const db = admin.firestore();
+                    const docRef = db.collection('WalletScores').doc(pa);
+                    await db.runTransaction(async (t) => {
+                        const snap = await t.get(docRef);
+                        const current = snap.exists ? Number(snap.data().score || 0) : 0;
+                        const next = Math.max(0, current - derivedScore);
+                        t.set(docRef, { score: next, walletAddress: pa, lastUpdated: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+                    });
+                    console.log(`[STRICT_POINTS] ✅ Décrément appliqué: -${derivedScore} pour ${pa}`);
+                } catch (debitErr) {
+                    console.error('[STRICT_POINTS] Échec décrément points:', debitErr.message || debitErr);
+                }
+            }
+
+                return res.json({ 
+                    success: true, 
+                    transactionHash: tx.hash, 
+                    blockNumber: r.blockNumber, 
+                    gasUsed: r.gasUsed.toString(),
+                    playerAddress: pa, 
+                    scoreAmount: derivedScore, 
+                    transactionAmount: derivedTx, 
+                    actionType,
+                    verified: true,
+                    message: 'Score submitted to Monad Games ID contract'
+                });
+            } finally {
+                serverTxMutex = false;
+            }
         }
 
     } catch (error) {
