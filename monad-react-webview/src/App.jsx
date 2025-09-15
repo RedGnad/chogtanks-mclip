@@ -18,7 +18,7 @@ function MonadLoginComponent() {
   // Fonction pour vérifier l'username via l'API Monad Games ID
   const checkUsernameFromAPI = async (walletAddress) => {
     try {
-      const response = await fetch(`https:///api/check-wallet?wallet=${walletAddress}`);
+      const response = await fetch(`https://chogtanks-nft-servers.onrender.com/api/check-username?wallet=${walletAddress}`);
       const data = await response.json();
       
       if (data.hasUsername && data.user && data.user.username) {
@@ -261,7 +261,7 @@ function MonadLoginComponent() {
             You need to create a username to continue playing CHOGTANKS.
           </div>
           <button 
-            onClick={() => window.open('https://https://monadclip.vercel.app//', '_blank')}
+            onClick={() => window.open('https://monadclip.fun', '_blank')}
             style={{
               background: '#A0055D',
               color: 'white',

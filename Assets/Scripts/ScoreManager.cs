@@ -903,9 +903,9 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
     private string GetCurrentMatchId()
     {
-        // MatchId simple basé sur l'heure et l'ActorNumber local pour corréler côté serveur
+        string room = PhotonNetwork.CurrentRoom != null ? PhotonNetwork.CurrentRoom.Name : "no_room";
         string actor = PhotonNetwork.LocalPlayer != null ? PhotonNetwork.LocalPlayer.ActorNumber.ToString() : "0";
-        return $"match_{actor}_{System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        return $"{room}|{actor}";
     }
     
     
