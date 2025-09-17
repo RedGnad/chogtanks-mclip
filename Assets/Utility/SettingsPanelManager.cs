@@ -7,6 +7,9 @@ public class SettingsPanelManager : MonoBehaviour
     public GameObject settingsPanel;
     public Button settingsButton;
     
+    [Tooltip("Boutons additionnels qui basculent le panneau comme le Settings Button")]
+    public Button[] additionalSettingsButtons;
+    
     [Header("Panel Visibility")]
     [Tooltip("Si décoché, le panneau sera caché au démarrage")]
     public bool showPanelAtStartup = false;
@@ -32,6 +35,16 @@ public class SettingsPanelManager : MonoBehaviour
             
         if (settingsButton != null)
             settingsButton.onClick.AddListener(ToggleSettingsPanel);
+        
+        // Boutons additionnels qui partagent le même Toggle
+        if (additionalSettingsButtons != null)
+        {
+            foreach (Button button in additionalSettingsButtons)
+            {
+                if (button != null)
+                    button.onClick.AddListener(ToggleSettingsPanel);
+            }
+        }
             
         // Configuration du bouton de fermeture principal
         if (closeButton != null)

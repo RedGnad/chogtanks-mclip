@@ -77,12 +77,16 @@ public class NFTDisplayPanel : MonoBehaviour
 
     private void Start()
     {
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[NFT-PANEL] NFTDisplayPanel Start() called");
+        #endif
         
         nftManager = FindObjectOfType<ChogTanksNFTManager>();
         if (nftManager != null)
         {
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.Log("[NFT-PANEL] ✅ NFTManager trouvé et connecté");
+            #endif
         }
         else
         {
@@ -97,7 +101,9 @@ public class NFTDisplayPanel : MonoBehaviour
         }
         else
         {
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.LogWarning("[NFT-PANEL] Refresh button is null!");
+            #endif
         }
         
         gameObject.SetActive(false);
@@ -105,19 +111,29 @@ public class NFTDisplayPanel : MonoBehaviour
     
     public void ShowPanel(string walletAddress)
     {
+        string latestWallet = PlayerPrefs.GetString("walletAddress", "");
         bool signApproved = PlayerPrefs.GetInt("personalSignApproved", 0) == 1;
-        if (!signApproved)
+        
+        // 1) Pas de wallet: afficher message de connexion
+        if (string.IsNullOrEmpty(latestWallet) && string.IsNullOrEmpty(walletAddress))
         {
-            Debug.LogWarning("[NFT-PANEL] Personal sign required - panel blocked");
-            UpdateStatus("Complete personal signature to access NFT panel");
+            gameObject.SetActive(true);
+            UpdateStatus("No Wallet Connected");
             return;
         }
         
-        currentWalletAddress = walletAddress;
+        // 2) Wallet présent mais signature manquante
+        if (!signApproved)
+        {
+            gameObject.SetActive(true);
+            UpdateStatus("Complete personal signature to continue");
+            return;
+        }
+        
+        // 3) Wallet + signature OK → afficher et rafraîchir
+        currentWalletAddress = !string.IsNullOrEmpty(walletAddress) ? walletAddress : latestWallet;
         gameObject.SetActive(true);
-        
         CleanupAllSimpleNFTButtons();
-        
         RefreshNFTList();
     }
     
@@ -128,14 +144,26 @@ public class NFTDisplayPanel : MonoBehaviour
     
     public async void RefreshNFTList()
     {
+        // 1) Wallet prioritaire: si pas de wallet, indiquer connexion avant la signature
+        string latestWallet = PlayerPrefs.GetString("walletAddress", "");
+        if (string.IsNullOrEmpty(latestWallet))
+        {
+            Debug.Log("[NFT-PANEL] No wallet connected - clearing NFT buttons");
+            currentWalletAddress = "";
+            UpdateStatus("No Wallet Connected");
+            ClearSimpleNFTButtons();
+            return;
+        }
+
+        // 2) Ensuite signature
         bool signApproved = PlayerPrefs.GetInt("personalSignApproved", 0) == 1;
         if (!signApproved)
         {
             Debug.LogWarning("[NFT-PANEL] Personal sign required - refresh blocked");
-            UpdateStatus("Complete personal signature to access NFTs");
+            UpdateStatus("Complete personal signature to continue");
             return;
         }
-        
+
         float currentTime = Time.time;
         if (currentTime - lastRefreshTime < MIN_REFRESH_INTERVAL)
         {
@@ -143,7 +171,7 @@ public class NFTDisplayPanel : MonoBehaviour
             return;
         }
         
-        string latestWallet = PlayerPrefs.GetString("walletAddress", "");
+        // Utiliser le wallet le plus récent sauvegardé
         if (!string.IsNullOrEmpty(latestWallet))
         {
             currentWalletAddress = latestWallet;
@@ -151,9 +179,10 @@ public class NFTDisplayPanel : MonoBehaviour
         }
         else
         {
-            Debug.Log("[NFT-PANEL] No wallet connected - clearing NFT buttons");
+            // Déjà traité plus haut, mais conservé par sécurité
+            Debug.Log("[NFT-PANEL] No wallet connected - clearing NFT buttons (late path)");
             currentWalletAddress = "";
-            UpdateStatus("No wallet connected");
+            UpdateStatus("No Wallet Connected");
             ClearSimpleNFTButtons();
             return;
         }

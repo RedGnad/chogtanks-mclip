@@ -141,6 +141,21 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     public UnityEngine.UI.Button warmUpTargetButton;
     private bool hasWarmedUp = false;
     private bool isWarmingUp = false; 
+
+    [System.Serializable]
+    public class WarmUpEntry
+    {
+        public UnityEngine.UI.Button warmUpTriggerButton;
+        public UnityEngine.UI.Button warmUpTargetButton;
+        [UnityEngine.HideInInspector] public bool hasWarmedUp = false;
+        // Auto-warmup très tôt (au démarrage), avant le premier affichage
+        public bool autoWarmUpOnStart = false;
+        public int autoWarmUpFrames = 0; // nombre de frames à attendre (0 = immédiat)
+        public float autoWarmUpDelay = 0f; // délai en secondes après les frames
+    }
+
+    [Header("Warm-Up System (Multiple)")]
+    public System.Collections.Generic.List<WarmUpEntry> warmUpEntries = new System.Collections.Generic.List<WarmUpEntry>();
     
     [Header("Simple NFT Buttons (Coexist with Panel)")]
     public Transform nftButtonContainer;
@@ -276,6 +291,34 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
         {
             Debug.LogWarning("[WARM-UP] Warm-up trigger button not assigned in Inspector");
         }
+
+        // Support multiple warm-up pairs (e.g., Evolve2, Skin2)
+        if (warmUpEntries != null)
+        {
+            foreach (var entry in warmUpEntries)
+            {
+                if (entry != null && entry.warmUpTriggerButton != null)
+                {
+                    entry.warmUpTriggerButton.onClick.AddListener(() => OnWarmUpTriggerClickedEntry(entry));
+                }
+                else
+                {
+                    Debug.LogWarning("[WARM-UP] Warm-up entry with missing trigger button");
+                }
+            }
+        }
+
+        // Auto-warmup très tôt pour les entrées qui le demandent
+        if (warmUpEntries != null)
+        {
+            foreach (var entry in warmUpEntries)
+            {
+                if (entry != null && entry.autoWarmUpOnStart && entry.warmUpTargetButton != null && !entry.hasWarmedUp)
+                {
+                    StartCoroutine(AutoWarmUpEntry(entry));
+                }
+            }
+        }
     }
     
     private void OnWarmUpTriggerClicked()
@@ -310,6 +353,49 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
         else
         {
             isWarmingUp = false;
+        }
+    }
+
+    private void OnWarmUpTriggerClickedEntry(WarmUpEntry entry)
+    {
+        if (entry == null) return;
+        if (!entry.hasWarmedUp)
+        {
+            entry.hasWarmedUp = true;
+            isWarmingUp = true;
+            StartCoroutine(SimulateButtonClickSilently(entry.warmUpTargetButton));
+        }
+        else
+        {
+            Debug.Log("[WARM-UP] Entry already warmed up this session");
+        }
+    }
+
+    private System.Collections.IEnumerator SimulateButtonClickSilently(UnityEngine.UI.Button target)
+    {
+        if (target != null)
+        {
+            yield return null; // wait 1 frame to ensure UI is active
+            target.onClick.Invoke();
+            yield return new WaitForSeconds(0.1f);
+            isWarmingUp = false;
+            yield break;
+        }
+        isWarmingUp = false;
+    }
+
+    private System.Collections.IEnumerator AutoWarmUpEntry(WarmUpEntry entry)
+    {
+        // Attendre le nombre de frames demandé
+        int frames = Mathf.Max(0, entry.autoWarmUpFrames);
+        for (int i = 0; i < frames; i++) { yield return null; }
+        // Attendre un petit délai si configuré
+        if (entry.autoWarmUpDelay > 0f) { yield return new UnityEngine.WaitForSeconds(entry.autoWarmUpDelay); }
+        // Simuler le clic, même si l'UI n'est pas encore visible (onClick.Invoke fonctionne hors visibilité)
+        if (entry.warmUpTargetButton != null)
+        {
+            entry.warmUpTargetButton.onClick.Invoke();
+            entry.hasWarmedUp = true;
         }
     }
     
@@ -500,7 +586,9 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             nftPanel.CleanupAllSimpleNFTButtons();
         }
         
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[NFTManager] Wallet disconnected - UI hidden");
+        #endif
     }
     
     public void ForceRefreshAfterMatch(int matchScore = 0)
@@ -1311,8 +1399,8 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
             {
                 string errorMsg = !string.IsNullOrEmpty(evolutionData.error) ? 
                     evolutionData.error : 
-                    $"Insufficient Score: {evolutionData.score}";
-                UpdateStatusUI($"Git Gud. {errorMsg}"); 
+                    $"Insufficient points: {evolutionData.score}/{evolutionData.evolutionCost}";
+                UpdateStatusUI(errorMsg); 
                 isProcessingEvolution = false;
             }
         }

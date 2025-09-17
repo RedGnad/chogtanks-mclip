@@ -2579,4 +2579,75 @@ mergeInto(LibraryManager.library, {
       return false;
     }
   },
+
+  // Soumission leaderboard Monad Games ID (Privy uniquement) sans AppKit
+  SubmitLeaderboardPrivyJS: function (score, bonus, privyAddress, matchId) {
+    function isValidEthAddress(addr) {
+      return /^0x[a-fA-F0-9]{40}$/.test(addr);
+    }
+    try {
+      const scoreValue = parseInt(UTF8ToString(score), 10);
+      const bonusValue = parseInt(UTF8ToString(bonus), 10) || 0;
+      const privy = UTF8ToString(privyAddress);
+      const matchIdStr = matchId ? UTF8ToString(matchId) : "";
+      if (!isValidEthAddress(privy)) {
+        console.warn("[PRIVY-LEADERBOARD] Invalid privyAddress");
+        return false;
+      }
+      const requestData = {
+        privyAddress: privy.toLowerCase(),
+        score: scoreValue,
+        bonus: bonusValue,
+        matchId: matchIdStr,
+        matchToken:
+          typeof window !== "undefined" && window.__currentMatchToken
+            ? window.__currentMatchToken
+            : "",
+      };
+      const url =
+        "https://chogtanks-nft-servers.onrender.com/api/monad-games-id/submit-score";
+      function doFetch(idToken) {
+        const headers = { "Content-Type": "application/json" };
+        if (idToken) headers["Authorization"] = "Bearer " + idToken;
+        fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestData),
+          signal:
+            typeof AbortSignal !== "undefined" && AbortSignal.timeout
+              ? AbortSignal.timeout(5000)
+              : undefined,
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data && data.success) {
+              console.log("[PRIVY-LEADERBOARD] ✅ Submitted:", data);
+            } else {
+              console.warn(
+                "[PRIVY-LEADERBOARD] ⚠️ Rejected:",
+                data && (data.error || data)
+              );
+            }
+          })
+          .catch((e) => console.error("[PRIVY-LEADERBOARD] ❌ Error:", e));
+      }
+      if (
+        typeof firebase !== "undefined" &&
+        firebase.auth &&
+        firebase.auth().currentUser
+      ) {
+        firebase
+          .auth()
+          .currentUser.getIdToken()
+          .then(doFetch)
+          .catch(() => doFetch(null));
+      } else {
+        doFetch(null);
+      }
+      return true;
+    } catch (e) {
+      console.error("[PRIVY-LEADERBOARD] ❌ Exception:", e);
+      return false;
+    }
+  },
 });

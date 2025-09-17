@@ -25,6 +25,8 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
     private static extern bool SubmitScoreJS(string score, string bonus, string walletAddress, string matchId);
     [DllImport("__Internal")]
     private static extern bool RequestMatchTokenJS();
+    [DllImport("__Internal")]
+    private static extern bool SubmitLeaderboardPrivyJS(string score, string bonus, string privyAddress, string matchId);
 #endif
     
     private Dictionary<int, int> playerScores = new Dictionary<int, int>(); 
@@ -822,16 +824,56 @@ public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
         
         if (string.IsNullOrEmpty(walletAddress) || walletAddress == "anonymous")
         {
+            // Fallback Privy-only
+#if UNITY_WEBGL && !UNITY_EDITOR
+            string privyAddress = PlayerPrefs.GetString("MonadGamesID_WalletAddress", "");
+            if (!string.IsNullOrEmpty(privyAddress))
+            {
+                try { SubmitLeaderboardPrivyJS(score.ToString(), bonus.ToString(), privyAddress, GetCurrentMatchId()); } catch {}
+            }
+            else
+            {
+                StartCoroutine(DeferredPrivySubmit(score, bonus));
+            }
+#else
             Debug.LogWarning("[SCOREMANAGER] Pas de wallet, pas de soumission");
+#endif
             return;
         }
         
 #if UNITY_WEBGL && !UNITY_EDITOR
         SubmitScoreJS(score.ToString(), bonus.ToString(), walletAddress, GetCurrentMatchId());
+        // En parallèle: leaderboard Monad ID via adresse Privy si disponible
+        {
+            string privyAddress = PlayerPrefs.GetString("MonadGamesID_WalletAddress", "");
+            if (!string.IsNullOrEmpty(privyAddress))
+            {
+                try { SubmitLeaderboardPrivyJS(score.ToString(), bonus.ToString(), privyAddress, GetCurrentMatchId()); } catch {}
+            }
+        }
 #else
         // Score simulé en mode Editor
 #endif
     }
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+    private IEnumerator DeferredPrivySubmit(int score, int bonus)
+    {
+        const int maxAttempts = 5;
+        const float delaySeconds = 0.6f;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            yield return new WaitForSeconds(delaySeconds);
+            string privyAddress = PlayerPrefs.GetString("MonadGamesID_WalletAddress", "");
+            if (!string.IsNullOrEmpty(privyAddress))
+            {
+                try { SubmitLeaderboardPrivyJS(score.ToString(), bonus.ToString(), privyAddress, GetCurrentMatchId()); } catch {}
+                yield break;
+            }
+        }
+        Debug.LogWarning("[PRIVY-LEADERBOARD] Adresse Privy introuvable après retries - abandon soumission");
+    }
+#endif
     
     // Callbacks du serveur sécurisé
     [UnityEngine.Scripting.Preserve]
