@@ -213,6 +213,12 @@ public class Enemy : MonoBehaviour
         {
             EnemyManager.Instance.OnEnemyDestroyed(gameObject);
         }
+
+        try
+        {
+            Sample.DailyQuestManager.Instance?.RecordEnemyKill();
+        }
+        catch {}
         
         Destroy(gameObject);
     }
@@ -226,6 +232,18 @@ public class Enemy : MonoBehaviour
     {
         SFXManager.Instance.PlayGameOverSFX();
     }
+
+    // Marquer la quête localement à la mort solo (score ≥ 5 & durée)
+    try
+    {
+        if (ScoreManager.Instance != null && PhotonNetwork.LocalPlayer != null)
+        {
+            int localScore = ScoreManager.Instance.GetPlayerScore(PhotonNetwork.LocalPlayer.ActorNumber);
+            float elapsed = ScoreManager.Instance.GetMatchElapsedSeconds();
+            Sample.DailyQuestManager.Instance?.RecordMatchEnd(localScore, elapsed);
+        }
+    }
+    catch {}
 
     // Solo death path simplifié : quitter immédiatement sans UI ni delay supplémentaire
     PhotonNetwork.LeaveRoom();

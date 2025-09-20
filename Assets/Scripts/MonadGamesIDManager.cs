@@ -2,9 +2,11 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using System.Threading.Tasks;
+using System.Collections;
 using Newtonsoft.Json;
 using Photon.Pun;
 using ExitGames.Client.Photon;
+using Photon.Realtime;
 
 namespace Sample
 {
@@ -138,6 +140,9 @@ namespace Sample
                 
                 PlayerSession.SetWalletAddress(result.walletAddress);
                 
+                // Émettre l'adresse Privy dans la room Photon si connecté
+                TryEmitPrivyAddressToPhoton();
+                
                 
                 var connect = FindObjectOfType<Sample.ConnectWalletButton>();
                 if (connect != null)
@@ -181,6 +186,9 @@ namespace Sample
             PlayerPrefs.SetString("MonadGamesID_Username", username);
             PlayerPrefs.SetString("MonadGamesID_WalletAddress", walletAddress);
             PlayerPrefs.Save();
+            
+            // Émettre l'adresse Privy dans la room Photon si connecté
+            TryEmitPrivyAddressToPhoton();
         }
         
         public void OnMonadGamesIDNotFound(string walletAddress)
@@ -464,7 +472,9 @@ namespace Sample
         {
             if (string.IsNullOrEmpty(username)) return;
             
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.Log($"[MONAD-PLAYER-NAME] Setting '{username}' as PhotonNetwork.NickName");
+            #endif
             
             // SIMPLE: Mettre à jour PhotonNetwork.NickName directement
             PhotonNetwork.NickName = username;
@@ -472,14 +482,18 @@ namespace Sample
             {
                 if (PhotonNetwork.LocalPlayer != null)
                 {
-                    var props = new Hashtable { { "privyUsername", username } };
+                    var props = new ExitGames.Client.Photon.Hashtable { { "privyUsername", username } };
                     PhotonNetwork.LocalPlayer.SetCustomProperties(props);
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
                     Debug.Log($"[MONAD-PLAYER-NAME] Set CustomProperties privyUsername='{username}'");
+                    #endif
                 }
             }
             catch (System.Exception e)
             {
-                Debug.LogWarning($"[MONAD-PLAYER-NAME] Failed to set privyUsername property: {e.Message}");
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    Debug.LogWarning($"[MONAD-PLAYER-NAME] Failed to set privyUsername property: {e.Message}");
+                    #endif
             }
             
             // Forcer la mise à jour du mainScreenPlayerNameText via LobbyUI
@@ -492,11 +506,15 @@ namespace Sample
                 if (method != null)
                 {
                     method.Invoke(lobbyUI, null);
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
                     Debug.Log($"[MONAD-PLAYER-NAME] UpdateMainScreenPlayerName() called - should show '{username}'");
+                    #endif
                 }
             }
             
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.Log($"[MONAD-PLAYER-NAME] PhotonNetwork.NickName set to '{username}'");
+            #endif
         }
         
         /// <summary>
@@ -507,10 +525,96 @@ namespace Sample
             // Ne plus écrire dans les Custom Properties Photon pour éviter les régressions
             PlayerPrefs.SetInt("MonadVerified", isVerified ? 1 : 0);
             PlayerPrefs.Save();
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.Log($"[MONAD-VERIFIED] Saved to PlayerPrefs only (no Photon props): {isVerified}");
+            #endif
         }
 
         public string GetCurrentUsername() => currentUsername;
+        
+        /// <summary>
+        /// Émet l'adresse Privy dans la room Photon courante de manière robuste et non-bloquante
+        /// </summary>
+        public void TryEmitPrivyAddressToPhoton()
+        {
+            StartCoroutine(EmitPrivyAddressCoroutine());
+        }
+        
+        private IEnumerator EmitPrivyAddressCoroutine()
+        {
+            // Retries pour couvrir les latences de join/restore
+            const int maxAttempts = 6;
+            const float delaySeconds = 0.6f;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                if (!PhotonNetwork.IsConnected || !PhotonNetwork.InRoom)
+                {
+                    if (attempt == maxAttempts)
+                    {
+                        yield break;
+                    }
+                    yield return new WaitForSeconds(delaySeconds);
+                    continue;
+                }
+
+                string privyAddress = PlayerPrefs.GetString("MonadGamesID_WalletAddress", "");
+                if (string.IsNullOrEmpty(privyAddress) || privyAddress == "anonymous")
+                {
+                    yield break;
+                }
+
+                var eventData = new ExitGames.Client.Photon.Hashtable();
+                string lowered = privyAddress.ToLower();
+                eventData["privyWallet"] = lowered;
+                eventData["userId"] = PhotonNetwork.AuthValues?.UserId ?? "";
+                eventData["timestamp"] = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+                // Option B: publier aussi via GameProperties (forwardées par PathGameProperties)
+                try
+                {
+                    var roomProps = new ExitGames.Client.Photon.Hashtable();
+                    roomProps["privyWallet"] = lowered;
+                    // Demander à Photon de forward l'update de propriétés vers le WebHook
+                    var webFlags = new Photon.Realtime.WebFlags(0);
+                    webFlags.HttpForward = true;
+                    PhotonNetwork.CurrentRoom?.SetCustomProperties(roomProps, null, webFlags);
+                }
+                catch (System.Exception e)
+                {
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    Debug.LogWarning($"[PRIVY-EMIT] SetCustomProperties failed: {e.Message}");
+                    #endif
+                }
+
+                bool sent = false;
+                try
+                {
+                    sent = PhotonNetwork.RaiseEvent(171, eventData, RaiseEventOptions.Default, SendOptions.SendReliable);
+                }
+                catch (System.Exception e)
+                {
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    Debug.LogWarning($"[PRIVY-EMIT] RaiseEvent exception: {e.Message}");
+                    #endif
+                }
+
+                if (sent)
+                {
+                    yield break;
+                }
+
+                if (attempt < maxAttempts)
+                {
+                    yield return new WaitForSeconds(delaySeconds);
+                }
+                else
+                {
+                    #if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    Debug.LogWarning("[PRIVY-EMIT] ⚠️ Échec envoi event Privy après retries - pas critique");
+                    #endif
+                }
+            }
+        }
         public bool IsSignedIn() => isSignedIn;
     }
 

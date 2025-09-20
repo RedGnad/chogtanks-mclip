@@ -20,6 +20,7 @@ public class EnemyManager : MonoBehaviourPunCallbacks
     private Coroutine soloDetectionCoroutine;
     private Coroutine enemySpawningCoroutine;
     private List<GameObject> activeEnemies = new List<GameObject>();
+    private HashSet<int> processedEnemyDrops = new HashSet<int>();
     private float currentSpawnInterval;
     private float soloStartTime;
     
@@ -222,6 +223,27 @@ public class EnemyManager : MonoBehaviourPunCallbacks
         {
             activeEnemies.Remove(enemy);
         }
+        
+        // 10% de chance de drop de coin à la position de l'ennemi
+        if (PhotonNetwork.IsMasterClient && ScoreManager.Instance != null)
+        {
+            int id = (enemy != null) ? enemy.GetInstanceID() : 0;
+            if (id != 0 && processedEnemyDrops.Contains(id))
+            {
+                return;
+            }
+            if (id != 0)
+            {
+                processedEnemyDrops.Add(id);
+            }
+
+            float roll = Random.value;
+            if (roll <= 0.10f)
+            {
+                Vector3 pos = enemy != null ? enemy.transform.position : GetRandomSpawnPosition();
+                ScoreManager.Instance.SpawnCoinAt(pos);
+            }
+        }
     }
     
     public void CleanupAllEnemies()
@@ -235,6 +257,7 @@ public class EnemyManager : MonoBehaviourPunCallbacks
         }
         
         activeEnemies.Clear();
+        processedEnemyDrops.Clear();
         
         if (enemySpawningCoroutine != null)
         {

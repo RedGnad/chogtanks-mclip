@@ -200,11 +200,11 @@ namespace Sample
                 metadata = new Metadata(
                     "CHOGTANKS",
                     "CHOGTANKS Unity WebGL",
-                    "https://redgnad.github.io/CHOGTANKS/",
+                    "https://chogtanks.vercel.app",
                     "https://raw.githubusercontent.com/RedGnad/CHOGTANKS/refs/heads/main/CHOG/chog.png",
                     new RedirectData {
                         Native = "appkit-sample-unity://",
-                        Universal = "https://redgnad.github.io/CHOGTANKS/"
+                        Universal = "https://chogtanks.vercel.app"
                     }
                 ),
                 customWallets = GetCustomWallets(),

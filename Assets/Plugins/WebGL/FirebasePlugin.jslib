@@ -165,23 +165,59 @@ mergeInto(LibraryManager.library, {
     try {
       if (typeof fetch === "undefined") return false;
       const url = "https://chogtanks-nft-servers.onrender.com/api/match/start";
+
       function call(idToken) {
         const headers = { "Content-Type": "application/json" };
         if (idToken) headers["Authorization"] = "Bearer " + idToken;
-        fetch(url, { method: "POST", headers })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data && data.matchToken) {
-              window.__currentMatchToken = data.matchToken;
-              // Reset anti-doublon pour le nouveau match
-              window.__lastScoreKey = null;
-              console.log("[MATCH] ✅ Token reçu");
-            } else {
-              console.warn("[MATCH] ⚠️ Pas de token match");
-            }
+
+        // Retry logic avec backoff exponentiel (+jitter)
+        let attempts = 0;
+        const maxAttempts = 5;
+        const delays = [300, 600, 1000, 1500, 2000]; // ms
+        function jitter(ms) {
+          return Math.max(100, Math.floor(ms * (0.85 + Math.random() * 0.3)));
+        }
+
+        function tryFetch() {
+          attempts++;
+
+          fetch(url, {
+            method: "POST",
+            headers,
+            signal: AbortSignal.timeout(5000),
           })
-          .catch((e) => console.error("[MATCH] ❌ Erreur:", e));
+            .then((r) => {
+              if (!r.ok) {
+                throw new Error(`HTTP ${r.status}`);
+              }
+              return r.json();
+            })
+            .then((data) => {
+              if (data && data.matchToken) {
+                window.__currentMatchToken = data.matchToken;
+                if (data.matchSig) {
+                  window._chogMatchSig = data.matchSig;
+                } else {
+                  window._chogMatchSig = "";
+                }
+                // Reset anti-doublon pour le nouveau match
+                window.__lastScoreKey = null;
+              } else {
+              }
+            })
+            .catch((e) => {
+              if (attempts < maxAttempts) {
+                const delay = delays[attempts - 1] || 1000;
+
+                setTimeout(tryFetch, delay);
+              } else {
+              }
+            });
+        }
+
+        tryFetch();
       }
+
       if (
         typeof firebase !== "undefined" &&
         firebase.auth &&
@@ -189,7 +225,7 @@ mergeInto(LibraryManager.library, {
       ) {
         firebase
           .auth()
-          .currentUser.getIdToken()
+          .currentUser.getIdToken(true)
           .then(call)
           .catch(() => call(null));
       } else {
@@ -242,10 +278,6 @@ mergeInto(LibraryManager.library, {
         window.__lastScoreKey = matchKey;
       }
 
-      console.log(
-        `[SCORE] Score soumis pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
-      );
-
       // SOUMISSION SÉCURISÉE UNIQUEMENT VIA SERVEUR
       const serverUrl =
         "https://chogtanks-nft-servers.onrender.com/api/firebase/submit-score";
@@ -261,23 +293,38 @@ mergeInto(LibraryManager.library, {
             : "",
       };
 
-      console.log(
-        `[SECURE-SCORE] Soumission sécurisée pour ${normalizedAddress}: ${scoreValue} (+${bonusValue})`
-      );
-
       function doFetch(idToken) {
         const headers = { "Content-Type": "application/json" };
         if (idToken) headers["Authorization"] = "Bearer " + idToken;
+        // Ajout HMAC de match si disponible
+        try {
+          headers["X-Match-Sig"] =
+            typeof window !== "undefined" && window._chogMatchSig
+              ? window._chogMatchSig
+              : "";
+        } catch (_) {}
         fetch(serverUrl, {
           method: "POST",
           headers: headers,
           body: JSON.stringify(requestData),
           signal: AbortSignal.timeout(5000),
         })
-          .then((response) => response.json())
+          .then((response) => {
+            if (response.status === 204) {
+              if (typeof unityInstance !== "undefined") {
+                unityInstance.SendMessage(
+                  "ScoreManager",
+                  "OnScoreSubmitted",
+                  String(totalScore)
+                );
+              }
+              return null;
+            }
+            return response.json();
+          })
           .then((data) => {
+            if (data === null) return; // déjà traité (204)
             if (data.success) {
-              console.log("[SECURE-SCORE] ✅ Score validé et soumis:", data);
               if (typeof unityInstance !== "undefined") {
                 unityInstance.SendMessage(
                   "ScoreManager",
@@ -286,10 +333,6 @@ mergeInto(LibraryManager.library, {
                 );
               }
             } else {
-              console.warn(
-                "[SECURE-SCORE] ⚠️ Score rejeté par le serveur:",
-                data
-              );
               if (typeof unityInstance !== "undefined") {
                 unityInstance.SendMessage(
                   "ScoreManager",
@@ -300,7 +343,6 @@ mergeInto(LibraryManager.library, {
             }
           })
           .catch((error) => {
-            console.error("[SECURE-SCORE] ❌ Erreur serveur:", error);
             if (typeof unityInstance !== "undefined") {
               unityInstance.SendMessage(
                 "ScoreManager",
@@ -319,7 +361,7 @@ mergeInto(LibraryManager.library, {
         ) {
           firebase
             .auth()
-            .currentUser.getIdToken()
+            .currentUser.getIdToken(true)
             .then(function (token) {
               doFetch(token);
             })
@@ -2604,32 +2646,129 @@ mergeInto(LibraryManager.library, {
             ? window.__currentMatchToken
             : "",
       };
-      const url =
+      const submitUrl =
         "https://chogtanks-nft-servers.onrender.com/api/monad-games-id/submit-score";
+      const signUrl =
+        "https://chogtanks-nft-servers.onrender.com/api/match/sign-score";
+
       function doFetch(idToken) {
-        const headers = { "Content-Type": "application/json" };
-        if (idToken) headers["Authorization"] = "Bearer " + idToken;
-        fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(requestData),
-          signal:
-            typeof AbortSignal !== "undefined" && AbortSignal.timeout
-              ? AbortSignal.timeout(5000)
-              : undefined,
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data && data.success) {
-              console.log("[PRIVY-LEADERBOARD] ✅ Submitted:", data);
-            } else {
-              console.warn(
-                "[PRIVY-LEADERBOARD] ⚠️ Rejected:",
-                data && (data.error || data)
-              );
+        const baseHeaders = { "Content-Type": "application/json" };
+        if (idToken) baseHeaders["Authorization"] = "Bearer " + idToken;
+        // Ajout HMAC de match si disponible
+        try {
+          baseHeaders["X-Match-Sig"] =
+            typeof window !== "undefined" && window._chogMatchSig
+              ? window._chogMatchSig
+              : "";
+        } catch (_) {}
+
+        // Si pas de matchToken, tenter d'en obtenir un avant de continuer
+        if (!requestData.matchToken || requestData.matchToken.length < 8) {
+          if (
+            typeof window !== "undefined" &&
+            typeof window.__currentMatchToken === "string" &&
+            window.__currentMatchToken.length >= 8
+          ) {
+            requestData.matchToken = window.__currentMatchToken;
+          } else if (
+            typeof window !== "undefined" &&
+            typeof window.RequestMatchTokenJS === "function"
+          ) {
+            try {
+              window.RequestMatchTokenJS();
+            } catch (_) {}
+          }
+        }
+
+        // Retry logic avec backoff exponentiel + jitter
+        let attempts = 0;
+        const maxAttempts = 3;
+        const baseDelays = [300, 600, 1000]; // ms
+        function jitter(ms) {
+          return Math.max(100, Math.floor(ms * (0.85 + Math.random() * 0.3)));
+        }
+
+        function trySubmit() {
+          attempts++;
+
+          // Jitter initial pour éviter collision avec fermeture de room
+          if (attempts === 1) {
+            const initial = Math.floor(100 + Math.random() * 200);
+            const startAt = Date.now();
+            while (Date.now() - startAt < initial) {
+              // micro-sleep CPU-friendly impossible ici; on fait juste un petit délai sync.
             }
+          }
+
+          // 1) Récupérer la signature de score (aligne cap score côté serveur)
+          const signBody = {
+            matchToken: requestData.matchToken,
+            score: requestData.score,
+            bonus: requestData.bonus,
+          };
+
+          fetch(signUrl, {
+            method: "POST",
+            headers: baseHeaders,
+            body: JSON.stringify(signBody),
+            signal: AbortSignal.timeout(5000),
+            keepalive: true,
           })
-          .catch((e) => console.error("[PRIVY-LEADERBOARD] ❌ Error:", e));
+            .then((r) => {
+              if (!r.ok) {
+                throw new Error(`Sign HTTP ${r.status}`);
+              }
+              return r.json();
+            })
+            .then((signData) => {
+              const headers = { ...baseHeaders };
+              if (signData && signData.scoreSig) {
+                headers["X-Score-Sig"] = signData.scoreSig;
+              }
+              // 2) Submit avec X-Score-Sig
+              return fetch(submitUrl, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(requestData),
+                signal: AbortSignal.timeout(5000),
+                keepalive: true,
+              });
+            })
+            .then((r) => {
+              if (!r.ok) {
+                throw new Error(`Submit HTTP ${r.status}`);
+              }
+              if (r.status === 204) {
+                return null;
+              }
+              return r.json();
+            })
+            .then((data) => {
+              if (data === null) return; // 204 success
+            })
+            .catch((e) => {
+              if (attempts < maxAttempts) {
+                const base = baseDelays[attempts - 1] || 1500;
+                const delay = jitter(base);
+                // Sur la première erreur, rafraîchir le matchToken avant retry
+                if (attempts === 1) {
+                  try {
+                    if (
+                      typeof window !== "undefined" &&
+                      typeof window.RequestMatchTokenJS === "function"
+                    ) {
+                      window.RequestMatchTokenJS();
+                    }
+                  } catch (_) {}
+                }
+
+                setTimeout(trySubmit, delay);
+              } else {
+              }
+            });
+        }
+
+        trySubmit();
       }
       if (
         typeof firebase !== "undefined" &&
@@ -2638,7 +2777,7 @@ mergeInto(LibraryManager.library, {
       ) {
         firebase
           .auth()
-          .currentUser.getIdToken()
+          .currentUser.getIdToken(true)
           .then(doFetch)
           .catch(() => doFetch(null));
       } else {

@@ -742,7 +742,7 @@ public class LobbyUI : MonoBehaviourPun, IMatchmakingCallbacks
     {
         if (PhotonNetwork.InRoom)
         {
-            PhotonNetwork.LeaveRoom();
+            StartCoroutine(SubmitThenLeaveRoom());
         }
         joinPanel.SetActive(true);
         waitingPanel.SetActive(false);
@@ -757,6 +757,33 @@ public class LobbyUI : MonoBehaviourPun, IMatchmakingCallbacks
         if (MenuCameraController.Instance != null)
         {
             MenuCameraController.Instance.EnableMenuMode();
+        }
+    }
+
+    private System.Collections.IEnumerator SubmitThenLeaveRoom()
+    {
+        // Tentative de soumission avant de quitter la room (fenêtre courte)
+#if UNITY_WEBGL && !UNITY_EDITOR
+        try
+        {
+            var scoreMgr = FindObjectOfType<ScoreManager>();
+            if (scoreMgr != null)
+            {
+                int actor = PhotonNetwork.LocalPlayer != null ? PhotonNetwork.LocalPlayer.ActorNumber : 0;
+                int currentScore = 0;
+                try { currentScore = scoreMgr.GetPlayerScore(actor); } catch {}
+                scoreMgr.SubmitScoreToFirebase(currentScore, 0);
+            }
+        }
+        catch {}
+        // Brève attente pour laisser passer la requête avant LeaveRoom
+        yield return new WaitForSeconds(0.8f);
+#else
+        yield return null;
+#endif
+        if (PhotonNetwork.InRoom)
+        {
+            PhotonNetwork.LeaveRoom();
         }
     }
 

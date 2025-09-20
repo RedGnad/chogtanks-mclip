@@ -35,7 +35,9 @@ public class BackendBridge : MonoBehaviour
 
     void Start()
     {
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[BackendBridge] Initialisation");
+        #endif
         RequestToken();
         // Renewal passif toutes les 15 minutes
         InvokeRepeating(nameof(CheckTokenRenewal), 60f, 60f);
@@ -45,7 +47,9 @@ public class BackendBridge : MonoBehaviour
     {
         if (_tokenReady && Time.realtimeSinceStartup > _nextTokenRenewAt - 120f) // 2 min marge
         {
+            #if UNITY_EDITOR || DEVELOPMENT_BUILD
             Debug.Log("[BackendBridge] Renouvellement token (préventif)");
+            #endif
             RequestToken(force: true);
         }
     }
@@ -53,10 +57,14 @@ public class BackendBridge : MonoBehaviour
     public void RequestToken(bool force = false)
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[BackendBridge] Demande de token Firebase" + (force ? " (force)" : ""));
+        #endif
         GetFirebaseIdTokenJS(gameObject.name, nameof(OnFirebaseIdToken), force ? 1 : 0);
 #else
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.LogWarning("[BackendBridge] (Editor) Pas de token WebGL. Simulé.");
+        #endif
         _idToken = "EDITOR_DUMMY"; _tokenReady = true;
 #endif
     }
@@ -71,7 +79,9 @@ public class BackendBridge : MonoBehaviour
         _idToken = token;
         _tokenReady = true;
         _nextTokenRenewAt = Time.realtimeSinceStartup + (55f * 60f); // 55 min
-        Debug.Log("[BackendBridge][AUTH] Token reçu (len=" + token.Length + ")");
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
+        Debug.Log("[BackendBridge][AUTH] Token prêt");
+        #endif
         // Rendre le token disponible aux autres appels UnityWebRequest (fallback)
         try
         {
@@ -115,7 +125,9 @@ public class BackendBridge : MonoBehaviour
             Debug.LogError("[BackendBridge] Échec initial AuthorizedPostJS (paramètres?)");
         }
 #else
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[BackendBridge] (Editor stub POST) " + url + " => " + jsonPayload);
+        #endif
 #endif
     }
 
@@ -130,27 +142,47 @@ public class BackendBridge : MonoBehaviour
     // =====================
     public void OnMintAuthorizationResponse(string raw)
     {
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[BackendBridge][MINT-AUTH][RAW] " + raw);
+        #endif
         var parsed = SafeParse(raw);
         if (parsed != null)
         {
             if (!parsed.ok)
+            {
+                #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 Debug.LogWarning("[BackendBridge][MINT-AUTH] Statut=" + parsed.status + " error=" + parsed.error);
+                #endif
+            }
             else
+            {
+                #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 Debug.Log("[BackendBridge][MINT-AUTH] OK statut=" + parsed.status + " body=" + Truncate(parsed.body));
+                #endif
+            }
         }
     }
 
     public void OnUpdatePlayerResponse(string raw)
     {
+        #if UNITY_EDITOR || DEVELOPMENT_BUILD
         Debug.Log("[BackendBridge][UPDATE][RAW] " + raw);
+        #endif
         var parsed = SafeParse(raw);
         if (parsed != null)
         {
             if (!parsed.ok)
+            {
+                #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 Debug.LogWarning("[BackendBridge][UPDATE] Statut=" + parsed.status + " error=" + parsed.error);
+                #endif
+            }
             else
+            {
+                #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 Debug.Log("[BackendBridge][UPDATE] OK statut=" + parsed.status + " body=" + Truncate(parsed.body));
+                #endif
+            }
         }
     }
 

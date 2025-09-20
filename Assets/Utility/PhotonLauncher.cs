@@ -404,8 +404,27 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
             {
                 return true;
             }
-        }
+        }        
         return false;
+    }
+    
+    /// <summary>
+    /// Émet l'adresse Privy dans la room Photon courante (appel via MonadGamesIDManager)
+    /// </summary>
+    private void TryEmitPrivyAddressToPhoton()
+    {
+        try
+        {
+            var monadManager = FindObjectOfType<Sample.MonadGamesIDManager>();
+            if (monadManager != null)
+            {
+                monadManager.TryEmitPrivyAddressToPhoton();
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[PHOTON-LAUNCHER] Erreur émission Privy (non-critique): {e.Message}");
+        }
     }
     
     [PunRPC]
@@ -607,6 +626,9 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
         }
         
         soundAlreadyPlayed = false;
+        
+        // Émettre l'adresse Privy dans la room (sécurité anti-farming)
+        TryEmitPrivyAddressToPhoton();
         
     // IMPORTANT: Ne plus appeler ResetManager ici pour ne pas annuler StartMatch() lancé par ScoreManager.OnJoinedRoom()
     // (Double reset supprimait la coroutine du timer => timer figé à 0 et plus de respawn)
