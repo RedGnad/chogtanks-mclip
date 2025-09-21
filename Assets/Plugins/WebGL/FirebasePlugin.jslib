@@ -281,6 +281,8 @@ mergeInto(LibraryManager.library, {
       // SOUMISSION SÉCURISÉE UNIQUEMENT VIA SERVEUR
       const serverUrl =
         "https://chogtanks-nft-servers.onrender.com/api/firebase/submit-score";
+      const signUrl =
+        "https://chogtanks-nft-servers.onrender.com/api/match/sign-score";
       const requestData = {
         walletAddress: normalizedAddress,
         score: scoreValue,
@@ -294,21 +296,49 @@ mergeInto(LibraryManager.library, {
       };
 
       function doFetch(idToken) {
-        const headers = { "Content-Type": "application/json" };
-        if (idToken) headers["Authorization"] = "Bearer " + idToken;
-        // Ajout HMAC de match si disponible
+        const baseHeaders = { "Content-Type": "application/json" };
+        if (idToken) baseHeaders["Authorization"] = "Bearer " + idToken;
         try {
-          headers["X-Match-Sig"] =
+          baseHeaders["X-Match-Sig"] =
             typeof window !== "undefined" && window._chogMatchSig
               ? window._chogMatchSig
               : "";
         } catch (_) {}
-        fetch(serverUrl, {
+
+        // 1) Sign-score pour obtenir X-Score-Sig (aligne cap + quêtes)
+        const signBody = {
+          matchToken:
+            typeof window !== "undefined" && window.__currentMatchToken
+              ? window.__currentMatchToken
+              : "",
+          score: scoreValue,
+          bonus: bonusValue,
+        };
+
+        fetch(signUrl, {
           method: "POST",
-          headers: headers,
-          body: JSON.stringify(requestData),
+          headers: baseHeaders,
+          body: JSON.stringify(signBody),
           signal: AbortSignal.timeout(5000),
+          keepalive: true,
         })
+          .then((r) => {
+            if (!r.ok) throw new Error("sign-score failed " + r.status);
+            return r.json();
+          })
+          .then((signData) => {
+            const headers = { ...baseHeaders };
+            if (signData && signData.scoreSig)
+              headers["X-Score-Sig"] = signData.scoreSig;
+            // 2) Submit Firebase avec X-Score-Sig (bypass présence si activé côté serveur)
+            return fetch(serverUrl, {
+              method: "POST",
+              headers,
+              body: JSON.stringify(requestData),
+              signal: AbortSignal.timeout(7000),
+              keepalive: true,
+            });
+          })
           .then((response) => {
             if (response.status === 204) {
               if (typeof unityInstance !== "undefined") {
@@ -323,7 +353,7 @@ mergeInto(LibraryManager.library, {
             return response.json();
           })
           .then((data) => {
-            if (data === null) return; // déjà traité (204)
+            if (data === null) return;
             if (data.success) {
               if (typeof unityInstance !== "undefined") {
                 unityInstance.SendMessage(
@@ -347,7 +377,7 @@ mergeInto(LibraryManager.library, {
               unityInstance.SendMessage(
                 "ScoreManager",
                 "OnScoreFailed",
-                "Serveur indisponible"
+                error && error.message ? error.message : "Serveur indisponible"
               );
             }
           });
@@ -950,7 +980,30 @@ mergeInto(LibraryManager.library, {
           console.error("[NFT][ERREUR] Erreur serveur sécurisé:", error);
           // Fallback vers Firebase direct si le serveur échoue
           console.log("[NFT][DEBUG] Fallback vers Firebase direct");
-          GetNFTStateFromFirebaseDirect(normalizedAddress);
+          try {
+            if (
+              typeof Module !== "undefined" &&
+              typeof Module["GetNFTStateFromFirebaseDirect"] === "function"
+            ) {
+              Module["GetNFTStateFromFirebaseDirect"](normalizedAddress);
+            } else if (typeof GetNFTStateFromFirebaseDirect === "function") {
+              GetNFTStateFromFirebaseDirect(normalizedAddress);
+            } else if (
+              typeof window !== "undefined" &&
+              typeof window.GetNFTStateFromFirebaseDirect === "function"
+            ) {
+              window.GetNFTStateFromFirebaseDirect(normalizedAddress);
+            } else {
+              console.error(
+                "[NFT][ERREUR] GetNFTStateFromFirebaseDirect introuvable"
+              );
+            }
+          } catch (e2) {
+            console.error(
+              "[NFT][ERREUR] Appel fallback Firebase direct a échoué:",
+              e2
+            );
+          }
         });
 
       console.log("[NFT][DEBUG] GetNFTStateJS terminé avec succès");

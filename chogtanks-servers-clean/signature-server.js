@@ -22,6 +22,25 @@ app.use((req, res, next) => {
     }
     next();
 });
+// Mode CORS permissif d'urgence
+if (process.env.CORS_PERMISSIVE === '1' || process.env.CORS_WILDCARD === '1') {
+    app.use((req, res, next) => {
+        const origin = req.headers.origin || '*';
+        if (process.env.CORS_WILDCARD === '1') {
+            // Wildcard: pas de credentials
+            res.set('Access-Control-Allow-Origin', '*');
+        } else {
+            res.set('Access-Control-Allow-Origin', origin);
+            res.set('Vary', 'Origin');
+            res.set('Access-Control-Allow-Credentials', 'true');
+        }
+        res.set('Access-Control-Allow-Methods', 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS');
+        res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Match-Sig, X-Score-Sig');
+        res.set('Access-Control-Max-Age', '600');
+        if (req.method === 'OPTIONS') return res.status(204).end();
+        return next();
+    });
+}
 // Si on veut neutraliser totalement le webhook Photon, on déclare une route ultra-légère AVANT tout parser
 if (process.env.PHOTON_WEBHOOK_DISABLE === '1') {
     app.post('/photon/webhook', (req, res) => res.sendStatus(204));
@@ -638,16 +657,29 @@ app.post('/api/firebase/submit-score', jsonParserMedium, submitScoreLimiter, req
 
             // Accepte si présence fraîche OU dans la fenêtre de grâce après fermeture
             if (!userKey || !hasAcceptablePhotonPresence(room, userKey)) {
-                if (REQUIRE_EXPLICIT_ROOM) {
-                    console.warn('[SUBMIT-SCORE][PHOTON-CHECK][STRICT] Reject explicit room presence: room=%s userKey=%s', room, userKey);
-                    return res.status(403).json({ error: 'Photon presence not verified (explicit room required)' });
+                const BYPASS_FIREBASE_PRESENCE = process.env.BYPASS_FIREBASE_PRESENCE === '1';
+                if (BYPASS_FIREBASE_PRESENCE) {
+                    // Exiger une signature de score valide pour le score plafonné dynamiquement
+                    const dynMaxForSig = getDurationMaxScore(rec.createdAt);
+                    cappedScore = Math.min(totalScore, dynMaxForSig);
+                    const providedScoreSig = req.headers['x-score-sig'] || req.headers['x_score_sig'] || null;
+                    const expectedScoreSig = computeScoreSig(matchToken, req.firebaseAuth?.uid || '', Number(cappedScore));
+                    if (!providedScoreSig || providedScoreSig !== expectedScoreSig) {
+                        return res.status(401).json({ error: 'Invalid score signature (firebase presence bypass)' });
+                    }
+                    console.log('[FIREBASE-BYPASS] ✅ Presence bypass with valid X-Score-Sig');
+                } else {
+                    if (REQUIRE_EXPLICIT_ROOM) {
+                        console.warn('[SUBMIT-SCORE][PHOTON-CHECK][STRICT] Reject explicit room presence: room=%s userKey=%s', room, userKey);
+                        return res.status(403).json({ error: 'Photon presence not verified (explicit room required)' });
+                    }
+                    const altRoom = findRecentRoomForActor(userKey);
+                    if (!altRoom || !hasAcceptablePhotonPresence(altRoom, userKey)) {
+                        console.warn('[SUBMIT-SCORE][PHOTON-CHECK] Reject: room=%s userKey=%s ttl=%d grace=%d', room, userKey, PHOTON_PRESENCE_TTL_MS, PHOTON_GRACE_AFTER_CLOSE_MS);
+                        return res.status(403).json({ error: 'Photon presence not verified for this match' });
+                    }
+                    room = altRoom;
                 }
-                const altRoom = findRecentRoomForActor(userKey);
-                if (!altRoom || !hasAcceptablePhotonPresence(altRoom, userKey)) {
-                    console.warn('[SUBMIT-SCORE][PHOTON-CHECK] Reject: room=%s userKey=%s ttl=%d grace=%d', room, userKey, PHOTON_PRESENCE_TTL_MS, PHOTON_GRACE_AFTER_CLOSE_MS);
-                    return res.status(403).json({ error: 'Photon presence not verified for this match' });
-                }
-                room = altRoom;
             }
 
             // Marquer la room comme longue (>=90s) pour la quête quotidienne (idempotent) – même si le match n'est pas fini
@@ -871,6 +903,9 @@ app.post('/api/monad-games-id/submit-score', jsonParserSmall, submitScoreLimiter
         if (cappedScore <= 0) {
             return res.status(204).end();
         }
+
+        // AJOUT : Log au début pour tracer la route
+        console.log(`[QUEST-MONAD-START] Route appelée, baseScore: ${baseScore}, totalScore: ${totalScore}, cappedScore: ${cappedScore}`);
 
         // Enforce match token usage si auth active
         if (process.env.FIREBASE_REQUIRE_AUTH === '1') {
@@ -2047,6 +2082,12 @@ const chogIface = new ethers.utils.Interface([
 
         if (derivedScore <= 0 && derivedTx <= 0) {
             return res.status(422).json({ error: 'No matching on-chain event for provided actionType' });
+        }
+
+        // AJOUT : Appliquer le bonus de quête à derivedScore pour Monad ID (comme pour Firebase)
+        if (typeof rec.questBonus === 'number' && rec.questBonus > 0) {
+            derivedScore += Number(rec.questBonus);
+            console.log(`[QUEST-MONAD] Bonus applied to derivedScore: +${rec.questBonus}, new derivedScore: ${derivedScore}`);
         }
 
         // Consommation de points côté serveur APRÈS confirmation on-chain (indépendant du binding)
