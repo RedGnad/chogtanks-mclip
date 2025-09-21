@@ -36,10 +36,10 @@ namespace Sample
             if (questListText)
             {
                 // No checkboxes; reward turns green when completed
-                string pts1 = q2 ? $"<color=#4CAF50>(+{rewardScoreOver15} pts)</color>" : $"<color=#9E9E9E>(+{rewardScoreOver15} pts)</color>";
-                string pts2 = q3 ? $"<color=#4CAF50>(+{rewardThreeLongMatches} pts)</color>" : $"<color=#9E9E9E>(+{rewardThreeLongMatches} pts)</color>";
-                string line1 = $"Score ≥ 5 {pts1}";
-                string line2 = $"Play 3 matches ≥ 90s {pts2}  <color=#BDBDBD>({p.longMatches}/3)</color>";
+                string xp1 = q2 ? $"<color=#4CAF50>(+{rewardScoreOver15} xp)</color>" : $"<color=#9E9E9E>(+{rewardScoreOver15} xp)</color>";
+                string xp2 = q3 ? $"<color=#4CAF50>(+{rewardThreeLongMatches} xp)</color>" : $"<color=#9E9E9E>(+{rewardThreeLongMatches} xp)</color>";
+                string line1 = $"Score ≥ 5 {xp1}";
+                string line2 = $"Play 3 matches ≥ 90s {xp2}  <color=#BDBDBD>({p.longMatches}/3)</color>";
                 questListText.text = line1 + "\n" + line2;
             }
 
