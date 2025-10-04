@@ -58,7 +58,12 @@ const allowedFromEnv = (process.env.ALLOWED_ORIGINS || '')
 const allowedOrigins = new Set(allowedFromEnv.length ? allowedFromEnv : defaultAllowed);
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && allowedOrigins.has(origin)) {
+    // Support CORS_WILDCARD pour debug
+    if (process.env.CORS_WILDCARD === '1') {
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Allow-Headers', '*');
+        res.set('Access-Control-Allow-Methods', '*');
+    } else if (origin && allowedOrigins.has(origin)) {
         res.set('Access-Control-Allow-Origin', origin);
         res.set('Vary', 'Origin');
         res.set('Access-Control-Allow-Credentials', 'true');
@@ -69,7 +74,12 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
     if (req.method !== 'OPTIONS') return next();
     const origin = req.headers.origin;
-    if (origin && allowedOrigins.has(origin)) {
+    // Support CORS_WILDCARD pour préflights
+    if (process.env.CORS_WILDCARD === '1') {
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Access-Control-Allow-Headers', '*');
+        res.set('Access-Control-Allow-Methods', '*');
+    } else if (origin && allowedOrigins.has(origin)) {
         res.set('Access-Control-Allow-Origin', origin);
         res.set('Access-Control-Allow-Credentials', 'true');
     }
@@ -160,6 +170,7 @@ const submitScoreLimiter = buildRouteLimiter({
 app.use(cors({
     origin: (origin, cb) => {
         if (!origin) return cb(null, true); // allow non-browser tools
+        if (process.env.CORS_WILDCARD === '1') return cb(null, true); // wildcard mode
         if (allowedOrigins.has(origin)) return cb(null, true);
         return cb(new Error('Not allowed by CORS'));
     },
@@ -170,6 +181,7 @@ app.use(cors({
 app.options('*', cors({
     origin: (origin, cb) => {
         if (!origin) return cb(null, true);
+        if (process.env.CORS_WILDCARD === '1') return cb(null, true); // wildcard mode
         if (allowedOrigins.has(origin)) return cb(null, true);
         return cb(new Error('Not allowed by CORS'));
     },
@@ -673,15 +685,15 @@ app.post('/api/firebase/submit-score', jsonParserMedium, submitScoreLimiter, req
                         console.warn('[SUBMIT-SCORE][PHOTON-CHECK][STRICT] Reject explicit room presence: room=%s userKey=%s', room, userKey);
                         return res.status(403).json({ error: 'Photon presence not verified (explicit room required)' });
                     }
-                    const altRoom = findRecentRoomForActor(userKey);
-                    if (!altRoom || !hasAcceptablePhotonPresence(altRoom, userKey)) {
+                const altRoom = findRecentRoomForActor(userKey);
+                if (!altRoom || !hasAcceptablePhotonPresence(altRoom, userKey)) {
                         console.warn('[SUBMIT-SCORE][PHOTON-CHECK] Reject: room=%s userKey=%s ttl=%d grace=%d', room, userKey, PHOTON_PRESENCE_TTL_MS, PHOTON_GRACE_AFTER_CLOSE_MS);
-                        return res.status(403).json({ error: 'Photon presence not verified for this match' });
-                    }
-                    room = altRoom;
+                    return res.status(403).json({ error: 'Photon presence not verified for this match' });
                 }
+                room = altRoom;
             }
-
+        }
+        
             // Marquer la room comme longue (>=90s) pour la quête quotidienne (idempotent) – même si le match n'est pas fini
             try {
                 const matchDurationMs = Date.now() - Number(rec.createdAt || 0);
@@ -833,12 +845,16 @@ app.post('/api/firebase/submit-score', jsonParserMedium, submitScoreLimiter, req
     }
 });
 
-app.post('/api/mint-authorization', requireWallet, requireFirebaseAuth, async (req, res) => {
+app.post('/api/mint-authorization', jsonParserSmall, requireWallet, requireFirebaseAuth, async (req, res) => {
     try {
+        // Log minimal pour debug (seulement si problème)
+        console.log(`[MINT] Requête reçue - Origin: ${req.headers.origin}, Body keys: ${Object.keys(req.body || {}).join(',')}`);
+        
         const { playerAddress, mintCost, playerPoints } = req.body || {};
         const pAddr = playerAddress || req.body?.walletAddress; // alias compat
 
         if (!pAddr) {
+            console.log(`[MINT] ❌ Adresse manquante - playerAddress: "${playerAddress}", walletAddress: "${req.body?.walletAddress}"`);
             return res.status(400).json({ error: "Adresse du joueur requise" });
         }
 
@@ -1161,7 +1177,7 @@ app.post('/api/monad-games-id/submit-score', jsonParserSmall, submitScoreLimiter
     }
 });
 
-app.post('/api/evolve-authorization', requireWallet, requireFirebaseAuth, async (req, res) => {
+app.post('/api/evolve-authorization', jsonParserSmall, requireWallet, requireFirebaseAuth, async (req, res) => {
     try {
         const { playerAddress, tokenId, targetLevel, playerPoints } = req.body || {};
 
@@ -1971,7 +1987,7 @@ async function getNextNonce(wallet) {
     }
 }
 
-app.post('/api/monad-games-id/update-player', requireWallet, requireFirebaseAuth, async (req, res) => {
+app.post('/api/monad-games-id/update-player', jsonParserSmall, requireWallet, requireFirebaseAuth, async (req, res) => {
     try {
         const { playerAddress, appKitWallet, actionType, txHash } = req.body || {};
 
@@ -2084,11 +2100,9 @@ const chogIface = new ethers.utils.Interface([
             return res.status(422).json({ error: 'No matching on-chain event for provided actionType' });
         }
 
-        // AJOUT : Appliquer le bonus de quête à derivedScore pour Monad ID (comme pour Firebase)
-        if (typeof rec.questBonus === 'number' && rec.questBonus > 0) {
-            derivedScore += Number(rec.questBonus);
-            console.log(`[QUEST-MONAD] Bonus applied to derivedScore: +${rec.questBonus}, new derivedScore: ${derivedScore}`);
-        }
+        // NOTE: Quest bonus is handled via match tokens in submit-score routes, not in update-player
+        // update-player handles direct on-chain events without quest bonuses
+        // Quest bonuses are applied during score submission via match tokens
 
         // Consommation de points côté serveur APRÈS confirmation on-chain (indépendant du binding)
         if (actionType === 'evolve' && derivedScore > 0 && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
@@ -2113,14 +2127,16 @@ const chogIface = new ethers.utils.Interface([
                     });
                 }
                 const db = admin.firestore();
-                const docRef = db.collection('WalletScores').doc(pa);
+                // CORRECTION: Débiter sur l'AppKit wallet (ak) au lieu du Privy wallet (pa)
+                // pour que l'affichage côté client soit cohérent
+                const docRef = db.collection('WalletScores').doc(ak);
                 await db.runTransaction(async (t) => {
                     const snap = await t.get(docRef);
                     const current = snap.exists ? Number(snap.data().score || 0) : 0;
                     const next = Math.max(0, current - derivedScore);
-                    t.set(docRef, { score: next, walletAddress: pa, lastUpdated: admin.firestore.FieldValue.serverTimestamp(), lastEvolutionTimestamp: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+                    t.set(docRef, { score: next, walletAddress: ak, lastUpdated: admin.firestore.FieldValue.serverTimestamp(), lastEvolutionTimestamp: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
                 });
-                console.log(`[POINTS] ✅ Décrément appliqué après evolve: -${derivedScore} pour ${pa}`);
+                console.log(`[POINTS] ✅ Décrément appliqué après evolve: -${derivedScore} pour ${ak} (AppKit wallet)`);
             } catch (debitErr) {
                 console.error('[POINTS] ❌ Échec décrément points:', debitErr.message || debitErr);
             }

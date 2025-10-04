@@ -1392,11 +1392,24 @@ mergeInto(LibraryManager.library, {
           console.log(`[AUTO-MINT-CHECK]  Sending result to Unity:`, result);
 
           if (typeof unityInstance !== "undefined") {
-            unityInstance.SendMessage(
-              "NFTDisplayPanel",
-              "OnHasMintedNFTChecked",
-              JSON.stringify(result)
-            );
+            // Essayer d'abord le gestionnaire central (recommandé)
+            try {
+              unityInstance.SendMessage(
+                "AutoMintManager",
+                "OnHasMintedNFTChecked",
+                JSON.stringify(result)
+              );
+            } catch (managerError) {
+              // Fallback sur l'ancien système si le manager n'existe pas
+              console.log(
+                "[AUTO-MINT-CHECK] AutoMintManager not found, falling back to direct panel"
+              );
+              unityInstance.SendMessage(
+                "NFTDisplayPanel",
+                "OnHasMintedNFTChecked",
+                JSON.stringify(result)
+              );
+            }
           }
         })
         .catch((error) => {
@@ -1413,11 +1426,24 @@ mergeInto(LibraryManager.library, {
           };
 
           if (typeof unityInstance !== "undefined") {
-            unityInstance.SendMessage(
-              "NFTDisplayPanel",
-              "OnHasMintedNFTChecked",
-              JSON.stringify(fallbackResult)
-            );
+            // Essayer d'abord le gestionnaire central (recommandé)
+            try {
+              unityInstance.SendMessage(
+                "AutoMintManager",
+                "OnHasMintedNFTChecked",
+                JSON.stringify(fallbackResult)
+              );
+            } catch (managerError) {
+              // Fallback sur l'ancien système si le manager n'existe pas
+              console.log(
+                "[AUTO-MINT-CHECK] AutoMintManager not found, falling back to direct panel"
+              );
+              unityInstance.SendMessage(
+                "NFTDisplayPanel",
+                "OnHasMintedNFTChecked",
+                JSON.stringify(fallbackResult)
+              );
+            }
           }
         });
 

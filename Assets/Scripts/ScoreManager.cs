@@ -11,7 +11,7 @@ using System.Linq;
 [UnityEngine.Scripting.Preserve]
 public class ScoreManager : MonoBehaviourPunCallbacks, IOnEventCallback
 {
-    private const float ROOM_LIFETIME = 180f; 
+    private const float ROOM_LIFETIME = 240f; 
     private const float RESPAWN_TIME = 5f;
     private const float COIN_SPAWN_INTERVAL = 20f; 
     

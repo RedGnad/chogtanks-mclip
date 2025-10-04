@@ -246,7 +246,7 @@ public class PhotonLauncher : MonoBehaviourPunCallbacks
 
     [Header("Room Settings")]
     public string roomName = "";
-    public byte maxPlayers = 2; // Reduced for testing auto public room creation cascade
+    public byte maxPlayers = 10; // Increased room capacity
 
     [Header("Match Flow (Debug)")]
     [Tooltip("Réactive l'ancien flux de soft restart (respawn dans la room avant de la quitter). Désactiver pour stabilité.")]

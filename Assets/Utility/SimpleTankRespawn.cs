@@ -355,6 +355,13 @@ public class SimpleTankRespawn : MonoBehaviourPun, IMatchmakingCallbacks
         {
             health.ResetHealth();
         }
+
+        // Bouclier de gr e2ce 1s au respawn pour  e9viter le spawnkill
+        var shield = GetComponent<TankShield>();
+        if (shield != null)
+        {
+            shield.ActivateGraceShield(1f);
+        }
     }
     
     private void ShowGameOverUI()

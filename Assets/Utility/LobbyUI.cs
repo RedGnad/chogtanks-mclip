@@ -233,7 +233,8 @@ public class LobbyUI : MonoBehaviourPun, IMatchmakingCallbacks
             var tankShield = localTank.GetComponent<TankShield>();
             if (tankShield != null && shieldButton != null)
             {
-                if (tankShield.IsShieldActive() && shieldButton.interactable)
+                // Ne déclenche le cooldown UI que pour le shield normal (grâce: CanUseShield reste true)
+                if (tankShield.IsShieldActive() && !tankShield.CanUseShield() && shieldButton.interactable)
                 {
                     StartCoroutine(ShieldCooldownCountdown());
                 }

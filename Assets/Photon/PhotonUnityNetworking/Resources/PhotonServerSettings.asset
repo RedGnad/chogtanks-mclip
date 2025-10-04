@@ -79,6 +79,7 @@ MonoBehaviour:
   - SetHasMonadBadge
   - RPC_SetMonadVerified
   - PlayExplosiveParticlesRPC
+  - RPC_ActivateGraceShield
   DisableAutoOpenWizard: 1
   ShowSettings: 1
   DevRegionSetOnce: 1

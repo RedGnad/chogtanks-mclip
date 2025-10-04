@@ -132,7 +132,8 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     public TextMeshProUGUI scoreProgressText;
     
     [Header("Monad Games ID Feedback")]
-    public TextMeshProUGUI monadSuccessText; // Texte à afficher pendant 3s
+    public TextMeshProUGUI monadSuccessText; // Texte à afficher pendant 3s (principal)
+    public TextMeshProUGUI monadSuccessTextSecondary; // Texte secondaire (pour 2ème panel)
     public AudioClip monadSuccessSound; // Son à jouer
     private AudioSource audioSource; // AudioSource pour jouer le son
     
@@ -2947,12 +2948,22 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
 
     private void ShowMonadFeedback(string message)
     {
+        // Afficher sur le texte principal
         if (monadSuccessText != null)
         {
             monadSuccessText.text = message;
             monadSuccessText.gameObject.SetActive(true);
-            StartCoroutine(HideMonadSuccessTextAfterDelay(3f));
         }
+        
+        // Afficher aussi sur le texte secondaire (pour le 2ème panel)
+        if (monadSuccessTextSecondary != null)
+        {
+            monadSuccessTextSecondary.text = message;
+            monadSuccessTextSecondary.gameObject.SetActive(true);
+        }
+        
+        // Cacher les deux textes après 3 secondes
+        StartCoroutine(HideMonadSuccessTextAfterDelay(3f));
         
         if (monadSuccessSound != null)
         {
@@ -2984,9 +2995,16 @@ public class ChogTanksNFTManager : MonoBehaviourPunCallbacks
     {
         yield return new WaitForSeconds(delay);
         
+        // Cacher le texte principal
         if (monadSuccessText != null)
         {
             monadSuccessText.gameObject.SetActive(false);
+        }
+        
+        // Cacher le texte secondaire
+        if (monadSuccessTextSecondary != null)
+        {
+            monadSuccessTextSecondary.gameObject.SetActive(false);
         }
     }
 

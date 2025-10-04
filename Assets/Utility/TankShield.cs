@@ -40,6 +40,12 @@ public class TankShield : MonoBehaviourPun
         photonView.RPC("RPC_ActivateShield", RpcTarget.All);
     }
     
+    // Active un bouclier temporaire sans consommer le cooldown (grâce spawn/respawn)
+    public void ActivateGraceShield(float durationSeconds)
+    {
+        photonView.RPC("RPC_ActivateGraceShield", RpcTarget.All, durationSeconds);
+    }
+    
     [PunRPC]
     void RPC_ActivateShield()
     {
@@ -94,6 +100,59 @@ public class TankShield : MonoBehaviourPun
             StartCoroutine(ShieldDurationCoroutine());
             StartCoroutine(ShieldCooldownCoroutine());
         }
+    }
+    
+    [PunRPC]
+    void RPC_ActivateGraceShield(float durationSeconds)
+    {
+        if (isShieldActive) return;
+        
+        isShieldActive = true;
+        // IMPORTANT: ne pas toucher à canUseShield pour ne pas déclencher de cooldown
+        
+        if (SFXManager.Instance != null)
+        {
+            SFXManager.Instance.PlayShieldActivation();
+        }
+        
+        currentShieldVisual = new GameObject("Shield");
+        Canvas canvas = currentShieldVisual.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = Camera.main;
+        canvas.sortingOrder = 100;
+        currentShieldVisual.transform.SetParent(transform);
+        currentShieldVisual.transform.localPosition = Vector3.zero;
+        currentShieldVisual.transform.localScale = Vector3.one * 0.01f;
+        GameObject imageObj = new GameObject("ShieldImage");
+        imageObj.transform.SetParent(currentShieldVisual.transform);
+        UnityEngine.UI.Image img = imageObj.AddComponent<UnityEngine.UI.Image>();
+        if (shieldSprite != null)
+        {
+            img.sprite = shieldSprite;
+            img.color = Color.white;
+        }
+        else
+        {
+            img.color = new Color(0, 1, 1, 0.7f);
+        }
+        RectTransform rectTransform = imageObj.GetComponent<RectTransform>();
+        rectTransform.sizeDelta = new Vector2(7, 7);
+        rectTransform.localPosition = Vector3.zero;
+        ShieldVisual shieldAnim = imageObj.AddComponent<ShieldVisual>();
+        shieldAnim.pulseIntensity = pulseIntensity;
+        shieldAnim.rotationSpeed = rotationSpeed;
+        
+        if (photonView.IsMine)
+        {
+            StartCoroutine(GraceShieldDurationCoroutine(durationSeconds));
+        }
+    }
+    
+    IEnumerator GraceShieldDurationCoroutine(float durationSeconds)
+    {
+        yield return new WaitForSeconds(durationSeconds);
+        photonView.RPC("RPC_DeactivateShield", RpcTarget.All);
+        // ne réactive pas canUseShield ici, car il n'a pas été désactivé
     }
     
     IEnumerator ShieldDurationCoroutine()
